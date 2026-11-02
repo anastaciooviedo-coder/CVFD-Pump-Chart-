@@ -22,3 +22,9 @@ App ids are `org.cvfd.pumpchart` in `app.json`; change them before the first sto
 
 ## Web version
 `web/index.html` is the browser version of the same app (one self-contained page).
+
+### Home screen icon and hosting
+The Training Division badge is the home screen icon (`web/icons/`, wired up through `web/manifest.webmanifest` and the `apple-touch-icon` link in `web/index.html`).
+The icon only shows when the page is opened from its own address, so `web/` is published with GitHub Pages by `.github/workflows/pages.yml` on every push to `main`.
+One-time setup: in the repo go to Settings > Pages and set Source to **GitHub Actions**. The app is then at
+`https://anastaciooviedo-coder.github.io/CVFD-Pump-Chart-/`.
