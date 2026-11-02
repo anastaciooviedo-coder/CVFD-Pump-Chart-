@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CVFD Pocket Pump Chart</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one narrow column like a pump-panel placard; tab bar pinned to the bottom for thumb reach. */
+:root{
+  --bg:#eef0f1; --panel:#ffffff; --ink:#15191c; --muted:#5c656c; --line:#d3d8dc; --plate:#1d2328; --plate-ink:#f4f6f7; --hi:#fff3a6; --hi-ink:#3a3200; --warn:#9a3412; --warn-bg:#ffedd5;
+  --red:#e0103a; --blue:#0070c0; --green:#00a040; --orange:#f05020; --yellow:#ffe600; --white:#ffffff;
+  --display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
+  --body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#101315; --panel:#1a1f23; --ink:#eef1f3; --muted:#9aa4ab; --line:#2c3439; --plate:#262d33; --plate-ink:#f4f6f7; --hi:#4a4210; --hi-ink:#fff3a6; --warn:#fdba74; --warn-bg:#431407; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#101315; --panel:#1a1f23; --ink:#eef1f3; --muted:#9aa4ab; --line:#2c3439; --plate:#262d33; --plate-ink:#f4f6f7; --hi:#4a4210; --hi-ink:#fff3a6; --warn:#fdba74; --warn-bg:#431407; color-scheme:dark}
+[hidden]{display:none!important}
+:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+body{margin:0;-webkit-text-size-adjust:100%}
+*,*::before,*::after{box-sizing:border-box}
+img{max-width:100%}
+html,body{background:var(--bg)}
+body{color:var(--ink);font-family:var(--body);font-size:16px;line-height:1.45}
+.wrap{max-width:560px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:16px calc(96px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:20px}
+body.building .wrap{padding-bottom:calc(170px + env(safe-area-inset-bottom,0px))}
+header{display:flex;align-items:center;gap:12px}
+header img{width:56px;height:56px;border-radius:50%;flex:none}
+header div{min-width:0}
+h1{font-family:var(--display);font-weight:700;font-size:28px;letter-spacing:.02em;text-transform:uppercase;margin:0;line-height:1.05;text-wrap:balance}
+h2{font-family:var(--display);font-weight:600;font-size:20px;letter-spacing:.06em;text-transform:uppercase;margin:0;color:var(--muted)}
+.sub{color:var(--muted);font-size:14px;margin:0}
+section[data-view]{display:flex;flex-direction:column;gap:16px}
+.col{display:flex;flex-direction:column;gap:12px}
+
+/* line picker */
+.lines{display:grid;gap:8px}
+.line{all:unset;box-sizing:border-box;display:grid;grid-template-columns:14px 1fr auto;align-items:center;gap:12px;padding:12px 14px;min-height:56px;background:var(--panel);border:2px solid var(--line);border-radius:10px;cursor:pointer}
+.line:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+.line[aria-pressed="true"]{border-color:var(--c)}
+.line .sw{width:14px;align-self:stretch;border-radius:4px;background:var(--c);min-height:32px}
+.line .nm{font-family:var(--display);font-weight:600;font-size:20px;text-transform:uppercase;letter-spacing:.03em;line-height:1.1}
+.line .ds{font-size:13px;color:var(--muted)}
+.line .ln{font-family:var(--display);font-weight:600;font-size:18px;color:var(--muted)}
+
+/* readout plate */
+.plate{background:var(--plate);color:var(--plate-ink);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:14px;border-top:8px solid var(--c)}
+.plate .tag{font-size:13px;letter-spacing:.08em;text-transform:uppercase;opacity:.75}
+.big{display:flex;align-items:flex-end;gap:10px}
+.big b{font-family:var(--display);font-weight:700;font-size:88px;line-height:.85;font-variant-numeric:tabular-nums}
+.big span{font-family:var(--display);font-size:24px;font-weight:600;padding-bottom:4px;opacity:.85}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.stat{background:rgba(255,255,255,.07);border-radius:8px;padding:8px 10px}
+.stat small{display:block;font-size:12px;letter-spacing:.06em;text-transform:uppercase;opacity:.7}
+.stat strong{font-family:var(--display);font-size:28px;font-weight:600;font-variant-numeric:tabular-nums}
+.np{display:flex;gap:8px;flex-wrap:wrap}
+.np button{all:unset;box-sizing:border-box;flex:1 1 0;min-width:64px;text-align:center;padding:10px 6px;border-radius:8px;border:2px solid rgba(255,255,255,.25);font-family:var(--display);font-size:22px;font-weight:600;cursor:pointer;font-variant-numeric:tabular-nums}
+.np button small{display:block;font-family:var(--body);font-size:11px;font-weight:500;opacity:.75;letter-spacing:.04em}
+.np button[aria-pressed="true"]{background:var(--plate-ink);color:var(--plate);border-color:var(--plate-ink)}
+.np button.pick{box-shadow:inset 0 -5px 0 var(--yellow)}
+.np button:focus-visible{outline:3px solid var(--c);outline-offset:2px}
+.note{font-size:14px;background:var(--hi);color:var(--hi-ink);border-radius:8px;padding:10px 12px;margin:0}
+.warn{font-size:14px;background:var(--warn-bg);color:var(--warn);border-radius:8px;padding:10px 12px;margin:0}
+
+/* tables */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.card-h{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.card-h .sw{width:10px;height:28px;border-radius:3px;background:var(--c,var(--line));flex:none}
+.card-h h3{margin:0;font-family:var(--display);font-weight:600;font-size:21px;text-transform:uppercase;letter-spacing:.03em;line-height:1.1}
+.card-h p{margin:0;font-size:13px;color:var(--muted)}
+.card-b{padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{padding:10px 12px;text-align:right;border-bottom:1px solid var(--line)}
+th{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;vertical-align:bottom}
+th:first-child,td:first-child{text-align:left}
+td{font-family:var(--display);font-size:22px;font-weight:600}
+td.txt{font-family:var(--body);font-size:15px;font-weight:500;text-align:left}
+tr:last-child td{border-bottom:0}
+tr.hl td{background:var(--hi);color:var(--hi-ink)}
+td.na{color:var(--muted);font-weight:500}
+td.off{color:var(--muted);font-weight:500;background:repeating-linear-gradient(135deg,transparent 0 6px,var(--line) 6px 7px)}
+table.dense th,table.dense td{padding:8px 8px}
+table.dense td{font-size:19px}
+.legend{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:8px;margin:0;flex-wrap:wrap}
+.legend i{display:inline-block;width:14px;height:14px;border-radius:3px;background:var(--hi);border:1px solid var(--line)}
+.legend i.off{background:repeating-linear-gradient(135deg,transparent 0 3px,var(--muted) 3px 4px)}
+details.card summary{cursor:pointer;list-style:none}
+details.card summary::-webkit-details-marker{display:none}
+details.card summary .card-h{border-bottom:0}
+details.card[open] summary .card-h{border-bottom:1px solid var(--line)}
+details.card summary .chev{margin-left:auto;font-family:var(--display);font-size:22px;color:var(--muted)}
+details.card[open] summary .chev{transform:rotate(90deg)}
+
+/* builder */
+.field{display:flex;flex-direction:column;gap:6px}
+.field>span{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600}
+select,input[type=number]{font:inherit;font-size:17px;color:var(--ink);background:var(--bg);border:2px solid var(--line);border-radius:8px;padding:10px 12px;min-height:48px;width:100%;box-sizing:border-box;min-width:0}
+select:focus-visible,input:focus-visible{outline:3px solid var(--ink);outline-offset:1px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.seg{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+.seg .row{display:flex;gap:8px;align-items:center;grid-column:1/-1}
+.seg .fl{font-family:var(--display);font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.seg .fl small{font-family:var(--body);font-size:12px;color:var(--muted);font-weight:500}
+.stepper{display:flex;align-items:center;gap:6px}
+.stepper output{font-family:var(--display);font-size:24px;font-weight:600;min-width:64px;text-align:center;font-variant-numeric:tabular-nums}
+.btn{all:unset;box-sizing:border-box;cursor:pointer;min-width:48px;min-height:48px;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;border:2px solid var(--line);background:var(--panel);font-family:var(--display);font-size:22px;font-weight:600;color:var(--ink);padding:0 12px}
+.btn:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+.btn.wide{width:100%;font-size:18px;letter-spacing:.05em;text-transform:uppercase}
+.btn.x{min-width:40px;min-height:40px;font-size:18px;color:var(--muted)}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chips .btn{font-size:16px;min-height:40px;letter-spacing:.03em}
+.result{position:fixed;left:0;right:0;bottom:calc(63px + env(safe-area-inset-bottom,0px));z-index:6;padding-left:max(8px,env(safe-area-inset-left,0px));padding-right:max(8px,env(safe-area-inset-right,0px));padding-bottom:6px}
+.result .in{max-width:560px;margin:0 auto;background:var(--plate);color:var(--plate-ink);border-radius:12px;padding:10px 14px;display:flex;align-items:center;gap:14px;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+.result b{font-family:var(--display);font-size:52px;line-height:.9;font-weight:700;font-variant-numeric:tabular-nums}
+.result .u{font-family:var(--display);font-size:16px;font-weight:600;opacity:.8;line-height:1}
+.result .bd{margin-left:auto;font-size:12px;line-height:1.35;text-align:right;opacity:.85;font-variant-numeric:tabular-nums}
+.breakdown{display:flex;flex-direction:column}
+.breakdown div{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+.breakdown div:last-child{border-bottom:0;font-weight:600}
+.breakdown span:last-child{font-family:var(--display);font-size:20px;font-weight:600}
+
+/* stations / hydrants */
+.stations{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.st{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 8px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:6px}
+.tri{width:0;height:0;border-left:22px solid transparent;border-right:22px solid transparent;border-bottom:38px solid var(--c)}
+.st b{font-family:var(--display);font-size:20px;text-transform:uppercase;letter-spacing:.03em}
+.st span{font-size:13px;color:var(--muted)}
+.dot{display:inline-block;width:18px;height:18px;border-radius:50%;background:var(--c);border:1px solid var(--line);vertical-align:-3px;margin-right:8px}
+.verdict{font-family:var(--display);font-size:24px;font-weight:600;line-height:1.15}
+
+/* tab bar */
+nav{position:fixed;left:0;right:0;bottom:0;background:var(--panel);border-top:1px solid var(--line);padding-left:max(4px,env(safe-area-inset-left,0px));padding-right:max(4px,env(safe-area-inset-right,0px));padding-bottom:env(safe-area-inset-bottom,0px);z-index:7}
+nav .in{max-width:560px;margin:0 auto;display:grid;grid-template-columns:repeat(5,1fr)}
+nav a{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60px;text-decoration:none;color:var(--muted);font-family:var(--display);font-weight:600;font-size:16px;letter-spacing:.04em;text-transform:uppercase;border-top:3px solid transparent}
+nav a[aria-current="page"]{color:var(--ink);border-top-color:var(--ink)}
+nav a:focus-visible{outline:3px solid var(--ink);outline-offset:-3px}
+footer{font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <img src="data:image/jpeg;base64,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" alt="Community Fire Training Division badge">
+    <div>
+      <h1>CVFD Pocket Pump Chart</h1>
+      <p class="sub">Created by Training Division · PDP = pump discharge pressure</p>
+    </div>
+  </header>
+
+  <section data-view="pump" aria-label="Crosslays">
+    <div class="lines" id="lines"></div>
+    <div class="plate" id="plate"></div>
+  </section>
+
+  <section data-view="build" hidden aria-label="Build a custom PDP">
+    <h2>Build a line</h2>
+    <p class="sub">Mix any nozzle, hose and lay. PDP = nozzle pressure + hose friction loss + appliances + elevation, using the CVFD friction loss chart.</p>
+    <div class="card"><div class="card-b">
+      <label class="field"><span>Nozzle</span><select id="b-noz"></select></label>
+      <div class="two">
+        <label class="field"><span>Nozzle psi</span><input id="b-np" type="number" inputmode="numeric" min="0" max="300"></label>
+        <label class="field"><span>Flow gpm</span><input id="b-gpm" type="number" inputmode="numeric" min="0" max="3000"></label>
+      </div>
+      <p class="sub" id="b-nozhint"></p>
+    </div></div>
+    <div class="card">
+      <div class="card-h"><div><h3>Hose lay</h3><p>Add each size in the lay, pump to nozzle</p></div></div>
+      <div class="card-b">
+        <div class="col" id="b-segs"></div>
+        <button class="btn wide" id="b-add" type="button">+ Add hose</button>
+      </div>
+    </div>
+    <div class="card"><div class="card-b">
+      <div class="field"><span>Appliances in line</span>
+        <div class="stepper"><button class="btn" type="button" data-step="app" data-d="-1" aria-label="Fewer appliances">−</button><output id="b-app">0</output><button class="btn" type="button" data-step="app" data-d="1" aria-label="More appliances">+</button></div>
+        <p class="sub">Wye, standpipe, manifold and the like. 10 psi each under 350 gpm, 25 psi over 350.</p>
+      </div>
+      <div class="field"><span>Floors above ground</span>
+        <div class="stepper"><button class="btn" type="button" data-step="floors" data-d="-1" aria-label="One floor down">−</button><output id="b-floors">0</output><button class="btn" type="button" data-step="floors" data-d="1" aria-label="One floor up">+</button></div>
+        <p class="sub">5 psi per floor. Go below 0 for lines below grade.</p>
+      </div>
+    </div></div>
+    <div class="card">
+      <div class="card-h"><div><h3>Breakdown</h3><p id="b-sum"></p></div></div>
+      <div class="card-b"><div class="breakdown" id="b-break"></div><div class="col" id="b-warn"></div></div>
+    </div>
+    <button class="btn wide" id="b-reset" type="button">Start over</button>
+  </section>
+
+  <section data-view="friction" hidden aria-label="Friction loss">
+    <h2>Friction loss</h2>
+    <div class="card">
+      <div class="card-h"><span class="sw" style="--c:var(--ink)"></span><div><h3>CVFD friction loss chart</h3><p>psi per 100' by hose · CVFD hoses 2026, rounded</p></div></div>
+      <div class="scroll"><table class="dense" id="fl-master"></table></div>
+    </div>
+    <p class="legend"><i class="off"></i>Past the flow this hose is used for</p>
+    <h2>By length</h2>
+    <p class="legend"><i></i>Highlighted on the original chart</p>
+    <div id="fl" class="col"></div>
+    <p class="sub">"Calc" is the online calculator figure for 100'. A dash means the chart has no value.</p>
+  </section>
+
+  <section data-view="hydrant" hidden aria-label="Hydrants">
+    <h2>Flow available</h2>
+    <div class="card"><div class="card-b">
+      <p class="sub">With the first line flowing, compare static and residual pressure.</p>
+      <div class="two">
+        <label class="field"><span>Static psi</span><input id="h-static" type="number" inputmode="numeric" min="0" max="200" value="80"></label>
+        <label class="field"><span>Residual psi</span><input id="h-resid" type="number" inputmode="numeric" min="0" max="200" value="70"></label>
+      </div>
+      <div id="h-out"></div>
+    </div></div>
+    <div class="card">
+      <div class="card-h"><div><h3>Drop rules</h3><p>Lines you can add</p></div></div>
+      <div class="scroll"><table><tbody>
+        <tr><td class="txt">0–10% drop</td><td class="txt">3 times the amount already flowing</td></tr>
+        <tr><td class="txt">11–15% drop</td><td class="txt">2 times the amount already flowing</td></tr>
+        <tr><td class="txt">16–25% drop</td><td class="txt">1 line, same amount already flowing</td></tr>
+      </tbody></table></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><div><h3>Residual at each drop</h3><p>psi</p></div></div>
+      <div class="scroll"><table id="h-table"></table></div>
+    </div>
+    <h2>Hydrant main size</h2>
+    <div class="card"><div class="scroll"><table id="h-colors"></table></div></div>
+  </section>
+
+  <section data-view="ref" hidden aria-label="Reference">
+    <h2>Nozzle charts</h2>
+    <p class="legend"><i></i>Highlighted on the original chart</p>
+    <div id="charts" class="col"></div>
+    <h2>Quick reference</h2>
+    <div id="ref" class="col"></div>
+    <h2>Nozzle colors</h2>
+    <div class="stations" id="stations"></div>
+    <h2>Crosslays</h2>
+    <div class="lines" id="legend"></div>
+  </section>
+
+  <footer>Figures copied from the CVFD flow chart and friction loss chart. Build tab numbers are calculated estimates. Confirm against your apparatus and SOPs.</footer>
+</div>
+
+<div class="result" id="result" hidden aria-live="polite"><div class="in">
+  <div><b id="r-pdp">0</b><div class="u">PSI PDP</div></div>
+  <div class="bd" id="r-bd"></div>
+</div></div>
+
+<nav aria-label="Sections"><div class="in">
+  <a href="#pump">Pump</a>
+  <a href="#build">Build</a>
+  <a href="#friction">Friction</a>
+  <a href="#hydrant">Hydrant</a>
+  <a href="#ref">Ref</a>
+</div></nav>
+
+<script>
+// ---------- chart data ----------
+const NOZZLES = {
+  sb1516: {name:"Elkhart Smooth Bore", tip:'15/16"', size:'1-3/4"', len:200, rows:[[40,83,180],[50,96,185],[60,121,215]], hl:1},
+  vortex: {name:"TFT Vortex", tip:'15/16"', size:'1-3/4"', len:200, rows:[[40,73,157],[50,96,185],[60,109,192],[67,128,215]], hl:1},
+  chief:  {name:"Elkhart Chief XD", tip:"Fog", size:'1-3/4"', len:200, rows:[[40,83,180],[50,95,185],[50,103,200]], hl:1},
+  sb1316: {name:"Elkhart Smooth Bore", tip:'1-3/16"', size:'2-1/2"', len:200, rows:[[40,68,277],[50,83,300],[60,102,341]], hl:1},
+  tft118: {name:"TFT", tip:'1-1/8"', size:'2-1/2"', len:200, rows:[[40,61,238],[50,76,266],[60,91,291]], hl:null},
+  bumper: {name:"Elkhart Fog", tip:"", size:'1-3/4"', len:150, rows:[[50,84,185]], hl:0, chartless:true,
+           note:"Front bumper: 50 psi NP + 34 psi friction loss = 84 psi PDP. 34 psi is 150' of 1-3/4\" at 185 gpm on the friction chart."}
+};
+const LINES = [
+  {id:"red",    color:"var(--red)",    name:"Red",    size:'2-1/2"', len:200, noz:"sb1316", nozLabel:"Elkhart Smooth Bore"},
+  {id:"blue",   color:"var(--blue)",   name:"Blue",   size:'1-3/4"', len:200, noz:"vortex", nozLabel:"TFT Vortex"},
+  {id:"green",  color:"var(--green)",  name:"Green",  size:'1-3/4"', len:200, noz:"chief",  nozLabel:"Elkhart Fog"},
+  {id:"orange", color:"var(--orange)", name:"Orange", size:'1-3/4"', len:200, noz:"sb1516", nozLabel:"Elkhart Smooth Bore"},
+  {id:"yellow", color:"var(--yellow)", name:"Yellow", size:'1-3/4"', len:150, noz:"bumper", nozLabel:"Elkhart Fog", where:"Front bumper"},
+  {id:"tft",    color:"var(--muted)",  name:"TFT 1-1/8\"", size:'2-1/2"', len:200, noz:"tft118", nozLabel:"TFT smooth bore", where:"Not a crosslay", extra:true}
+];
+// By-length tables: [gpm, 50', 100', 200', 100' online calc, highlighted]
+const FL = [
+  {name:'1-3/4" Combat', rows:[[75,null,4,8,4],[100,null,7,14,7],[125,5,10,20,10],[150,7,15,30,15],[165,9,18,36,18,1],[185,11,23,46,23,1],[200,13,26,52,26,1]]},
+  {name:'2-1/4" TRU ID', rows:[[100,1,3,5,3],[150,3,6,12,6],[200,5,11,22,11],[250,8,17,34,17],[300,12,24,49,24,1]]},
+  {name:'2-1/2" Combat', rows:[[250,6,11,23,11],[300,8,16,33,16],[350,11,22,44,22],[400,15,29,58,29],[500,23,45,91,45,1]]},
+  {name:'3" Big 10', rows:[[200,2,4,7,4],[250,3,6,11,6],[300,4,8,16,8],[350,5,11,22,11],[400,7,14,28,14,1],[500,11,22,44,22,1],[600,16,32,64,32,1],[750,25,50,99,50,1],[1000,44,88,176,88,1]]}
+];
+// CVFD friction loss chart, psi per 100'. maxUse: flows past this are greyed out on the chart.
+const HOSES = [
+  {id:"175", label:'1-3/4"', name:"Key Combat Ready", maxUse:350, pts:[[50,2],[100,7],[150,15],[200,26],[250,41],[300,60]]},
+  {id:"225", label:'2-1/4"', name:"Key Tru ID", maxUse:350, pts:[[100,3],[150,6],[200,11],[250,17],[300,24]]},
+  {id:"25",  label:'2-1/2"', name:"Key Combat Ready", maxUse:500, pts:[[250,11],[300,16],[350,22],[400,29],[500,45]]},
+  {id:"3",   label:'3"',     name:"Key Big 10", maxUse:1000, pts:[[200,4],[250,6],[300,8],[350,11],[400,14],[500,22],[600,32],[750,50],[1000,88]]},
+  {id:"5",   label:'5"',     name:"Key Hy Flow", maxUse:1750, pts:[[400,0.82],[500,1],[600,2],[750,3],[1000,5],[1100,6],[1300,9],[1400,10],[1500,12],[1750,16]]}
+];
+const FL_GPM = [50,100,150,200,250,300,350,400,500,600,750,1000,1100,1300,1400,1500,1750];
+// Builder nozzle presets: [id, group, label, np, gpm, hint]
+const PRESETS = [
+  ["h78","Handline tips @ 50 psi",'7/8" tip',50,165],
+  ["h1516","Handline tips @ 50 psi",'15/16" tip',50,185],
+  ["h1316","Handline tips @ 50 psi",'1-3/16" tip',50,300],
+  ["h1","Handline tips @ 50 psi",'1" tip',50,210],
+  ["h1b","Handline tips @ 50 psi",'1" tip @ 80 psi',80,266],
+  ["h118","Handline tips @ 50 psi",'1-1/8" tip (2-1/4" hose)',50,265],
+  ["h1116a","Handline tips @ 50 psi",'1-1/16" tip (2-1/4" hose)',50,237],
+  ["h114","Handline tips @ 50 psi",'1-1/4" tip',50,328],
+  ["s25","Handline tips @ 50 psi","25 mm stack tip",50,210],
+  ["s28","Handline tips @ 50 psi","28 mm stack tip",50,266],
+  ["elk","Fog nozzles","Elkhart fog",50,200],
+  ["metro","Fog nozzles","Metro fog",75,200],
+  ["tftauto","Fog nozzles",'TFT 2-1/2" automatic fog',100,250,"Automatic nozzle: flows 95 to 300 gpm. Set the gpm you are flowing."],
+  ["hen","Fog nozzles",'HEN 2-1/2"',45,250],
+  ["m114","Master stream @ 80 psi",'1-1/4" tip',80,415],
+  ["m112","Master stream @ 80 psi",'1-1/2" tip',80,598],
+  ["m112l","Master stream @ 80 psi",'1-1/2" tip @ 50 psi',50,473],
+  ["bfog","Blitzfire",'Blitzfire fog, low pressure',55,500],
+  ["bfogh","Blitzfire",'Blitzfire fog, high pressure',100,500],
+  ["b112","Blitzfire",'Blitzfire 1-1/2" tip',80,600],
+  ["b114","Blitzfire",'Blitzfire 1-1/4" tip',80,400],
+  ["b1","Blitzfire",'Blitzfire 1" tip',80,200],
+  ["custom","Other","Custom nozzle",50,150,"Enter the nozzle pressure and flow."]
+];
+const STATIONS = [["Station 1","var(--blue)","Blue"],["Station 2","var(--red)","Red"],["Station 3","var(--yellow)","Yellow"]];
+const HYDRANTS = [["Red","var(--red)",'4"'],["Yellow","var(--yellow)",'6"'],["White","var(--white)",'8"'],["Green","var(--green)",'10"–20"'],["Orange","var(--orange)",'24"–60"'],["Orange cap & body","var(--orange)",'36"–90"']];
+
+// ---------- helpers ----------
+const store = {get(k){try{return localStorage.getItem(k)}catch(e){return null}}, set(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+// Friction loss per 100' at a flow: chart value, straight-line between chart rows,
+// or scaled by flow squared past either end of the chart (flagged as an estimate).
+function flPer100(hose, gpm){
+  const p = hose.pts;
+  if(gpm<=0) return {v:0, how:"chart"};
+  const hit = p.find(x=>x[0]===gpm); if(hit) return {v:hit[1], how:"chart"};
+  if(gpm<p[0][0]) return {v:p[0][1]*(gpm/p[0][0])**2, how:"below"};
+  const last=p[p.length-1];
+  if(gpm>last[0]) return {v:last[1]*(gpm/last[0])**2, how:"above"};
+  for(let i=1;i<p.length;i++) if(gpm<p[i][0]){const [g0,f0]=p[i-1],[g1,f1]=p[i]; return {v:f0+(f1-f0)*(gpm-g0)/(g1-g0), how:"between"};}
+}
+const r0 = n => Math.round(n);
+
+// ---------- pump tab ----------
+let lineId = store.get("line") || "blue";
+if(!LINES.some(l=>l.id===lineId)) lineId="blue";
+let ri = Number(store.get("ri"));
+
+function lineBtn(l, pressable){
+  const desc = `${l.size} w/ ${l.nozLabel}${l.where?" · "+l.where:""}`;
+  return `<${pressable?'button':'div'} class="line" style="--c:${l.color}" ${pressable?`data-line="${l.id}" aria-pressed="${l.id===lineId}"`:""}>
+    <span class="sw"></span>
+    <span><span class="nm">${esc(l.name)}</span><br><span class="ds">${esc(desc)}</span></span>
+    <span class="ln">${l.len}'</span></${pressable?'button':'div'}>`;
+}
+function renderPump(){
+  $("#lines").innerHTML = LINES.map(l=>lineBtn(l,true)).join("");
+  const l = LINES.find(x=>x.id===lineId), n = NOZZLES[l.noz];
+  if(!(ri>=0 && ri<n.rows.length)) ri = n.hl ?? 0;
+  const row = n.rows[ri];
+  const plate = $("#plate");
+  plate.style.setProperty("--c", l.color);
+  plate.innerHTML = `
+    <div class="tag">${esc(l.name)} · ${l.len}' of ${esc(l.size)} · ${esc(n.name)}${n.tip?" "+esc(n.tip):""}</div>
+    <div class="big" aria-live="polite"><b>${row[1]}</b><span>PSI PDP</span></div>
+    <div class="stats">
+      <div class="stat"><small>Flow</small><strong>${row[2]} gpm</strong></div>
+      <div class="stat"><small>Nozzle pressure</small><strong>${row[0]} psi</strong></div>
+    </div>
+    <div class="np" role="group" aria-label="Nozzle pressure">
+      ${n.rows.map((r,i)=>`<button data-ri="${i}" class="${i===n.hl?"pick":""}" aria-pressed="${i===ri}">${r[0]}<small>${r[2]} gpm</small></button>`).join("")}
+    </div>
+    ${n.hl!=null && n.rows.length>1?`<p class="tag" style="margin:0">Yellow bar marks the row highlighted on the chart</p>`:""}
+    ${n.note?`<p class="note">${esc(n.note)}</p>`:""}`;
+}
+$("#lines").addEventListener("click",e=>{
+  const b=e.target.closest("[data-line]"); if(!b) return;
+  lineId=b.dataset.line; store.set("line",lineId);
+  const n=NOZZLES[LINES.find(x=>x.id===lineId).noz]; ri = n.hl ?? 0; store.set("ri",ri);
+  renderPump();
+});
+$("#plate").addEventListener("click",e=>{
+  const b=e.target.closest("[data-ri]"); if(!b) return;
+  ri=Number(b.dataset.ri); store.set("ri",ri); renderPump();
+});
+
+// ---------- build tab ----------
+const DEFAULT_BUILD = {noz:"h1516", np:50, gpm:185, segs:[{hose:"175", len:200}], app:0, floors:0};
+let B; try{ B = JSON.parse(store.get("build")) }catch(e){}
+if(!B || !Array.isArray(B.segs)) B = structuredClone(DEFAULT_BUILD);
+const saveB = () => store.set("build", JSON.stringify(B));
+
+function initBuild(){
+  const groups=[...new Set(PRESETS.map(p=>p[1]))];
+  $("#b-noz").innerHTML = groups.map(g=>`<optgroup label="${esc(g)}">${PRESETS.filter(p=>p[1]===g).map(p=>`<option value="${p[0]}">${esc(p[2])}${p[0]==="custom"?"":` · ${p[3]} psi · ${p[4]} gpm`}</option>`).join("")}</optgroup>`).join("");
+}
+function calcBuild(){
+  const gpm = Math.max(0, Number(B.gpm)||0), np = Math.max(0, Number(B.np)||0);
+  const warns=[];
+  const segs = B.segs.map(s=>{
+    const h = HOSES.find(x=>x.id===s.hose) || HOSES[0];
+    const f = flPer100(h,gpm);
+    if(f.how==="above") warns.push(`${h.label} hose: ${gpm} gpm is past the top of the chart (${h.pts[h.pts.length-1][0]} gpm). Friction loss is estimated.`);
+    else if(f.how==="below") warns.push(`${h.label} hose: ${gpm} gpm is below the chart's first row (${h.pts[0][0]} gpm). Friction loss is estimated.`);
+    else if(gpm>h.maxUse) warns.push(`${h.label} hose: ${gpm} gpm is past what this hose is used for on the chart.`);
+    return {h, len:s.len, per:f.v, fl:f.v*s.len/100, how:f.how};
+  });
+  const hoseFL = segs.reduce((a,s)=>a+s.fl,0);
+  const appEach = gpm>350 ? 25 : 10;
+  const appFL = B.app*appEach;
+  const elev = B.floors*5;
+  const pdp = np + hoseFL + appFL + elev;
+  if(segs.some(s=>s.how==="between")) warns.push("Some friction loss falls between chart rows, so it is figured in a straight line between them.");
+  if(pdp>250) warns.push("PDP is over 250 psi. Check the lay before pumping it.");
+  return {gpm,np,segs,hoseFL,appEach,appFL,elev,pdp:Math.max(0,pdp),warns};
+}
+function renderBuild(){
+  $("#b-noz").value = B.noz;
+  if(document.activeElement!==$("#b-np")) $("#b-np").value = B.np;
+  if(document.activeElement!==$("#b-gpm")) $("#b-gpm").value = B.gpm;
+  const p = PRESETS.find(x=>x[0]===B.noz);
+  $("#b-nozhint").textContent = (p&&p[5]) || "Change psi or gpm to match what you are flowing.";
+  $("#b-app").textContent = B.app;
+  $("#b-floors").textContent = B.floors;
+  const c = calcBuild();
+  const sizeOpts = cur => HOSES.map(h=>`<option value="${h.id}" ${h.id===cur?"selected":""}>${esc(h.label)} ${esc(h.name)}</option>`).join("");
+  $("#b-segs").innerHTML = B.segs.map((s,i)=>{
+    const cs=c.segs[i];
+    return `<div class="seg">
+      <select data-seg="${i}" aria-label="Hose size, section ${i+1}">${sizeOpts(s.hose)}</select>
+      ${B.segs.length>1?`<button class="btn x" type="button" data-del="${i}" aria-label="Remove section ${i+1}">✕</button>`:"<span></span>"}
+      <div class="row">
+        <div class="stepper"><button class="btn" type="button" data-len="${i}" data-d="-50" aria-label="50 feet shorter">−</button><output>${s.len}'</output><button class="btn" type="button" data-len="${i}" data-d="50" aria-label="50 feet longer">+</button></div>
+        <span class="fl" style="margin-left:auto">${r0(cs.fl)} psi<br><small>${cs.per<10?cs.per.toFixed(1):r0(cs.per)} per 100'</small></span>
+      </div></div>`;
+  }).join("");
+  const rows = [
+    ["Nozzle pressure", c.np],
+    ...c.segs.map(s=>[`${s.len}' of ${s.h.label}`, r0(s.fl)]),
+    ...(B.app?[[`${B.app} appliance${B.app>1?"s":""} × ${c.appEach}`, c.appFL]]:[]),
+    ...(B.floors?[[`${B.floors} floor${Math.abs(B.floors)>1?"s":""} × 5`, c.elev]]:[]),
+    ["PDP", r0(c.pdp)]
+  ];
+  $("#b-break").innerHTML = rows.map(r=>`<div><span>${esc(r[0])}</span><span>${r[1]} psi</span></div>`).join("");
+  $("#b-sum").textContent = `${c.gpm} gpm through ${B.segs.reduce((a,s)=>a+s.len,0)}' of hose`;
+  $("#b-warn").innerHTML = c.warns.map(w=>`<p class="warn">${esc(w)}</p>`).join("");
+  $("#r-pdp").textContent = r0(c.pdp);
+  $("#r-bd").innerHTML = `${c.np} NP + ${r0(c.hoseFL)} FL${B.app?` + ${c.appFL} app`:""}${B.floors?` ${c.elev<0?"−":"+"} ${Math.abs(c.elev)} elev`:""}<br>${c.gpm} gpm`;
+  saveB();
+}
+$("#b-noz").addEventListener("change",e=>{
+  const p=PRESETS.find(x=>x[0]===e.target.value); B.noz=p[0]; B.np=p[3]; B.gpm=p[4]; renderBuild();
+});
+$("#b-np").addEventListener("input",e=>{B.np=Number(e.target.value)||0; renderBuild()});
+$("#b-gpm").addEventListener("input",e=>{B.gpm=Number(e.target.value)||0; renderBuild()});
+$("#b-add").addEventListener("click",()=>{const last=B.segs[B.segs.length-1]; B.segs.push({hose:last?last.hose:"175", len:100}); renderBuild()});
+$("#b-reset").addEventListener("click",()=>{B=structuredClone(DEFAULT_BUILD); renderBuild(); window.scrollTo(0,0)});
+$("#b-segs").addEventListener("change",e=>{const i=e.target.dataset.seg; if(i==null) return; B.segs[i].hose=e.target.value; renderBuild()});
+$("#b-segs").addEventListener("click",e=>{
+  const d=e.target.closest("[data-del]"); if(d){B.segs.splice(Number(d.dataset.del),1); renderBuild(); return;}
+  const l=e.target.closest("[data-len]"); if(l){const s=B.segs[l.dataset.len]; s.len=Math.min(3000,Math.max(50,s.len+Number(l.dataset.d))); renderBuild();}
+});
+document.querySelector('[data-view="build"]').addEventListener("click",e=>{
+  const b=e.target.closest("[data-step]"); if(!b) return;
+  const k=b.dataset.step, d=Number(b.dataset.d);
+  if(k==="app") B.app=Math.min(6,Math.max(0,B.app+d));
+  if(k==="floors") B.floors=Math.min(100,Math.max(-10,B.floors+d));
+  renderBuild();
+});
+
+// ---------- friction tab ----------
+function renderFL(){
+  $("#fl-master").innerHTML = `<thead><tr><th>gpm</th>${HOSES.map(h=>`<th>${esc(h.label)}</th>`).join("")}</tr></thead><tbody>`+
+    FL_GPM.map(g=>`<tr><td>${g}</td>${HOSES.map(h=>{const p=h.pts.find(x=>x[0]===g); if(p) return `<td>${p[1]}</td>`; return g>h.maxUse?`<td class="off"></td>`:`<td class="na">–</td>`}).join("")}</tr>`).join("")+`</tbody>`;
+  const cell=v=>v===null?`<td class="na">–</td>`:`<td>${v}</td>`;
+  $("#fl").innerHTML = FL.map(h=>`<details class="card"><summary>
+    <div class="card-h"><span class="sw" style="--c:var(--ink)"></span><div><h3>${esc(h.name)}</h3><p>Friction loss in psi by flow and length</p></div><span class="chev" aria-hidden="true">›</span></div></summary>
+    <div class="scroll"><table><thead><tr><th>gpm</th><th>50'</th><th>100'</th><th>200'</th><th>100' calc</th></tr></thead><tbody>`+
+    h.rows.map(r=>`<tr class="${r[5]?"hl":""}"><td>${r[0]}</td>${cell(r[1])}${cell(r[2])}${cell(r[3])}${cell(r[4])}</tr>`).join("")+`</tbody></table></div></details>`).join("");
+}
+
+// ---------- hydrant tab ----------
+function renderHydrant(){
+  const S=Number($("#h-static").value), R=Number($("#h-resid").value);
+  let out;
+  if(!S || R<0 || R>S) out = `<p class="warn">Enter a static pressure and a residual that is not higher than static.</p>`;
+  else{
+    const drop = (S-R)/S*100, d=Math.round(drop);
+    let v;
+    if(R<=20) v="Minimum residual. No additional lines.";
+    else if(d<=10) v="You can add 3 times the amount already flowing.";
+    else if(d<=15) v="You can add 2 times the amount already flowing.";
+    else if(d<=25) v="You can add 1 more line of the same amount.";
+    else v="Over 25% drop. No additional lines.";
+    out = `<div class="breakdown"><div><span>Drop</span><span>${S-R} psi · ${d}%</span></div></div><p class="verdict">${v}</p>`;
+  }
+  $("#h-out").innerHTML = out;
+}
+function initHydrant(){
+  const rows=[100,90,80,70,60,50,40,30];
+  $("#h-table").innerHTML = `<thead><tr><th>Static</th><th>10%</th><th>15%</th><th>25%</th></tr></thead><tbody>`+
+    rows.map(s=>`<tr><td>${s}</td><td>${Math.round(s*.9)}</td><td>${[85,76,68,59,51,42,34,25][rows.indexOf(s)]}</td><td>${[75,67,60,52,45,37,30,22][rows.indexOf(s)]}</td></tr>`).join("")+
+    `<tr><td>20</td><td class="txt" colspan="3" style="text-align:left">Minimum residual. No additional lines.</td></tr></tbody>`;
+  $("#h-colors").innerHTML = `<thead><tr><th>Color</th><th>Main</th></tr></thead><tbody>`+
+    HYDRANTS.map(([n,c,m])=>`<tr><td class="txt"><span class="dot" style="--c:${c}"></span>${esc(n)}</td><td>${m}</td></tr>`).join("")+`</tbody>`;
+  $("#h-static").addEventListener("input",renderHydrant);
+  $("#h-resid").addEventListener("input",renderHydrant);
+  renderHydrant();
+}
+
+// ---------- reference tab ----------
+function refCard(title, sub, head, rows){
+  return `<div class="card"><div class="card-h"><div><h3>${esc(title)}</h3>${sub?`<p>${esc(sub)}</p>`:""}</div></div>
+    <div class="scroll"><table>${head?`<thead><tr>${head.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead>`:""}<tbody>${rows.map(r=>`<tr>${r.map((c,i)=>`<td class="${i===0||typeof c==="string"?"txt":""}">${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>`;
+}
+function renderRef(){
+  const order=["sb1516","vortex","chief","sb1316","tft118"];
+  $("#charts").innerHTML = order.map(k=>{
+    const n=NOZZLES[k]; const used=LINES.filter(l=>l.noz===k&&!l.extra);
+    const c = used[0]?used[0].color:"var(--muted)";
+    const lines = used.length?used.map(l=>l.name).join(", ")+" line":"No crosslay assigned";
+    return `<div class="card"><div class="card-h"><span class="sw" style="--c:${c}"></span><div><h3>${esc(n.name)} ${esc(n.tip)}</h3><p>${n.len}' of ${esc(n.size)} Combat · ${esc(lines)}</p></div></div>
+      <div class="scroll"><table><thead><tr><th>Nozzle psi</th><th>PDP psi</th><th>Flow gpm</th></tr></thead><tbody>
+      ${n.rows.map((r,i)=>`<tr class="${i===n.hl?"hl":""}"><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join("")}
+      </tbody></table></div></div>`;
+  }).join("");
+  $("#ref").innerHTML = [
+    refCard("Nozzle pressures","",null,[["Low pressure fog","50 psi"],["High pressure fog","75 psi"],["Fog master stream","100 psi"],["Smooth bore handline","50 psi"],["Smooth bore master stream","80 psi"]]),
+    refCard("Handline tips","Under 350 gpm, @ 50 psi unless noted",["Tip","Flow"],PRESETS.filter(p=>p[1]==="Handline tips @ 50 psi"||p[1]==="Fog nozzles").map(p=>[p[2], `${p[0]==="tftauto"?"95–300":p[4]} gpm${p[3]!==50?` @ ${p[3]} psi`:""}`])),
+    refCard("Master stream tips","Over 350 gpm, @ 80 psi unless noted",["Tip","Flow"],[['1-1/4"',"415 gpm"],['1-1/2"',"598 gpm"],['1-1/2" @ 50 psi',"473 gpm"]]),
+    refCard("Appliance friction loss","",null,[["Under 350 gpm","10 psi"],["Over 350 gpm","25 psi"]]),
+    refCard("Blitzfire PDP","Fog NP low 55 or high 100 psi · smooth bore NP 80 psi",["Lay","Fog 55/100","1-1/2\"","1-1/4\"","1\""],[["GPM","500","600","400","200"],["100' 3\"","77/122","112","94","84"],["200' 3\"","99/144","144","108","87"],["300' 3\"","121/166","176","122","91"]]),
+    refCard("Deck gun / booster line PDP","",null,[["Fog nozzle","95–100 psi"],["Booster line","180–200 psi"]]),
+    refCard("High rise operations","200' of 3\" to the standpipe, 100' of 2-1/2\" from the standpipe to the fire floor, 100' of 2-1/4\" with a 1-1/16\" nozzle",null,[["PDP","115–130 psi + 5 psi for every floor above ground level"],["PRV or non-PRV","Doesn't matter unless a pump pressure is stated at the FDC"]])
+  ].join("");
+  $("#stations").innerHTML = STATIONS.map(([s,c,n])=>`<div class="st"><span class="tri" style="--c:${c}" aria-hidden="true"></span><b>${s}</b><span>${n}</span></div>`).join("");
+  $("#legend").innerHTML = LINES.filter(l=>!l.extra).map(l=>lineBtn(l,false)).join("");
+}
+
+// ---------- routing ----------
+const VIEWS=["pump","build","friction","hydrant","ref"];
+function route(){
+  let v = location.hash.slice(1);
+  if(v==="nozzles"||v==="colors") v="ref";
+  if(!VIEWS.includes(v)) v="pump";
+  document.querySelectorAll("section[data-view]").forEach(s=>s.hidden = s.dataset.view!==v);
+  document.querySelectorAll("nav a").forEach(a=>a.setAttribute("aria-current", a.getAttribute("href")==="#"+v ? "page" : "false"));
+  $("#result").hidden = v!=="build";
+  document.body.classList.toggle("building", v==="build");
+}
+window.addEventListener("hashchange",()=>{route(); window.scrollTo(0,0)});
+initBuild(); initHydrant();
+renderPump(); renderBuild(); renderFL(); renderRef(); route();
+</script>
+
+</body>
+</html>

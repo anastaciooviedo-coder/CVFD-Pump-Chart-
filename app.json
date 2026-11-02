@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "CVFD Pocket Pump Chart",
+    "slug": "pump-chart",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "org.cvfd.pumpchart",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#1D2328",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "package": "org.cvfd.pumpchart"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
