@@ -1,0 +1,9 @@
+{
+  "appId": "org.communityvfd.cvfd",
+  "appName": "CVFD",
+  "webDir": "www",
+  "ios": { "contentInset": "never", "scheme": "CVFD" },
+  "plugins": {
+    "SplashScreen": { "launchShowDuration": 600, "backgroundColor": "#1d2328", "showSpinner": false }
+  }
+}
