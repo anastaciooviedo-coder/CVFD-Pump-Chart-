@@ -22,6 +22,8 @@ for f in ['firebase-app-compat.js', 'firebase-auth-compat.js', 'firebase-firesto
     shutil.copy(os.path.join(M, 'node_modules', 'firebase', f), os.path.join(WWW, 'lib', f))
 for f in ['shim.js', 'privacy.html', 'sogs.json', 'eo-phase-book.pdf']:
     if os.path.exists(os.path.join(SRC, f)): shutil.copy(os.path.join(SRC, f), os.path.join(WWW, f))
+if os.path.isdir(os.path.join(SRC, 'practice')):
+    shutil.copytree(os.path.join(SRC, 'practice'), os.path.join(WWW, 'practice'), dirs_exist_ok=True)
 if os.path.isdir(os.path.join(SRC, 'seed')):
     shutil.copytree(os.path.join(SRC, 'seed'), os.path.join(WWW, 'seed'), dirs_exist_ok=True)
 if not os.path.exists(os.path.join(WWW, 'firebase-config.js')):
