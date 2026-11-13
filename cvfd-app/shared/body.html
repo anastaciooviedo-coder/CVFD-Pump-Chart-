@@ -578,7 +578,7 @@ function vHomeTdGroups(){
     </div>`;
 }
 function vMoved(){
-  return `<section class="view"><div class="empty">The Fire Training Division has its own app now: training categories, phase books, the academy, your training record and the Cadre tools.<br><br><a class="btn primary" href="${TD_APP}" target="_blank" rel="noopener">Open CVFD Training Division ↗</a></div></section>`;
+  return `<section class="view"><div class="empty">That page isn't part of the Field Guide.<br><br><a class="btn primary" href="#home">Back to Home</a></div></section>`;
 }
 function vHome(){
   if (MODE==="td") return vHomeTd();
@@ -595,9 +595,7 @@ function vHome(){
       </div>
       ${editing?`<button class="btn" type="button" data-act="new-supp">+ Add Fire Suppression category</button>`:""}
     </div>
-    ${APP ? vHomeTdGroups() : `<div class="group"><h2>Fire Training Division</h2>
-      <div class="tiles"><a class="tile" href="${TD_APP}" target="_blank" rel="noopener" style="--c:var(--s4)"><b>CVFD Training Division ↗</b><span>Training categories, phase books, academy, your training record</span></a></div>
-    </div>`}
+    ${APP ? vHomeTdGroups() : ""}
     <div class="group"><div class="gh"><h2>Department Tools</h2><a class="sub" href="#tools">All</a></div>
       ${storeNotice() || vToolTiles()}
     </div>
