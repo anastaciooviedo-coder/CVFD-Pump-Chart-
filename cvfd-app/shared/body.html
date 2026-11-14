@@ -754,32 +754,35 @@ function vCat(id){
 
 function vRankChart(){
   const R = [
-    ["Fire Chief","Overall leadership, strategy, budget, outside relations",null,"cs"],
-    ["Assistant Chief","Operations, Administration or EMS oversight; planning and policy",null,"cs"],
-    ["Deputy Chief","Logistics, Special Operations, Volunteers or other areas",null,"cs"],
-    ["Battalion Chief","Multi-station oversight, recruiting, budget support, equipment",[20.00,33.80],"off"],
-    ["Captain","Station command, policy development, personnel management",[19.00,32.11],"off"],
-    ["Lieutenant","Directs shift operations, trains personnel, fills in for Captain",[18.50,31.27],"off"],
-    ["Engineer","Drives apparatus, leads daily ops, fills in for Lieutenant",[18.00,30.42],"ff"],
-    ["Firefighter / EMT","Responds, maintains equipment and apparatus, provides EMS",[17.00,28.73],"ff"]];
-  const lo = 15, hi = 35, pct = v => ((v-lo)/(hi-lo)*100).toFixed(1);
-  const money = v => "$"+v.toFixed(2);
-  const ladder = R.map(([rk,focus,pay,band],i)=>{ const lvl = R.length-i;
-    return `<div class="rk-row rk-${band}" style="--lvl:${lvl-1}"><span class="rk-n">${lvl}</span><div class="rk-main"><b>${esc(rk)}</b><small>${esc(focus)}</small>${pay?`<div class="rk-bar" aria-label="Pay ${money(pay[0])} to ${money(pay[1])} an hour"><span style="left:${pct(pay[0])}%;width:${(pct(pay[1])-pct(pay[0])).toFixed(1)}%"></span></div><div class="rk-pay"><span>${money(pay[0])}</span><span>${money(pay[1])}/hr</span></div>`:`<div class="rk-cmd">Command staff</div>`}</div></div>`; }).join("");
-  const paid = [["Meet eligibility","2 to 5 yrs in grade, FF I/II, EMT, Fire Officer I, clean record"],["Test","Written exam on SOPs, tactics, policy + assessment center"],["Rank list","Scores make the list; top candidates interview"],["Appointment","Chief or board selects; training + probation"],["Keep developing","Higher Fire Officer certs, evaluations, acting time"]];
-  const vol = [["Join and train","Application, background, FF I/II, EMT, orientation"],["Show up","Calls, drills, meetings, training hours, reliability"],["Lead","Extra duties, mentor newer members, initiative"],["Election or appointment","Elected by members or appointed by the Chief"],["Keep growing","Keep certs, stay active; path into paid jobs"]];
-  const steps = paid.map((p,i)=>`<div class="rk-step rk-paid"><i>${i+1}</i><b>${esc(p[0])}</b><small>${esc(p[1])}</small></div><div class="rk-step rk-vol"><i>${i+1}</i><b>${esc(vol[i][0])}</b><small>${esc(vol[i][1])}</small></div>`).join("");
+    ["Firefighter / EMT","Respond, maintain apparatus, provide EMS","$17.00 to $28.73/hr","ff","Start here"],
+    ["Engineer","Drive apparatus, lead daily ops, fill in for Lt","$18.00 to $30.42/hr","ff",""],
+    ["Lieutenant","Run the shift, train personnel, fill in for Captain","$18.50 to $31.27/hr","off",""],
+    ["Captain","Station command, policy, personnel management","$19.00 to $32.11/hr","off",""],
+    ["Battalion Chief","Multi-station oversight, recruiting, budget, equipment","$20.00 to $33.80/hr","off",""],
+    ["Deputy Chief","Logistics, Special Ops, Volunteers","Command staff","cs",""],
+    ["Assistant Chief","Operations, Administration or EMS; planning and policy","Command staff","cs",""],
+    ["Fire Chief","Leads the department, strategy, budget, outside relations","Command staff","cs","Top"]];
+  const arrow = `<div class="bf-arrow" aria-hidden="true"></div>`;
+  const flow = R.map(([rk,focus,pay,band,tag],i)=>`${i?arrow:""}<div class="bf-node bf-${band}">${tag?`<span class="bf-tag">${tag}</span>`:""}<b>${esc(rk)}</b><small>${esc(focus)}</small><em>${esc(pay)}</em></div>`).join("");
+  const paid = [["Meet eligibility","2 to 5 yrs in grade, FF I/II, EMT, Fire Officer I"],["Test","Written exam + assessment center"],["Rank list","Scores rank you; top candidates interview"],["Appointment","Chief or board selects; probation"],["Keep developing","Higher certs, evaluations, acting time"]];
+  const vol = [["Join and train","Application, FF I/II, EMT, orientation"],["Show up","Calls, drills, meetings, training hours"],["Lead","Extra duties, mentor newer members"],["Election or appointment","Elected by members or Chief appoints"],["Keep growing","Stay active; path into paid jobs"]];
+  const col = (list,cls) => list.map(([t,d],i)=>`${i?`<div class="bf-arrow bf-sm" aria-hidden="true"></div>`:""}<div class="bf-node bf-step ${cls}"><span class="bf-num">${i+1}</span><b>${esc(t)}</b><small>${esc(d)}</small></div>`).join("");
+  const split = `<svg class="bf-split" viewBox="0 0 200 40" preserveAspectRatio="none" aria-hidden="true"><path d="M100 0 C100 20 50 20 50 40" class="bf-l-paid"/><path d="M100 0 C100 20 150 20 150 40" class="bf-l-vol"/></svg>`;
+  const merge = `<svg class="bf-split" viewBox="0 0 200 40" preserveAspectRatio="none" aria-hidden="true"><path d="M50 0 C50 20 100 20 100 40" class="bf-l-paid"/><path d="M150 0 C150 20 100 20 100 40" class="bf-l-vol"/></svg>`;
   const cmp = [["Entry","Academy + formal hiring","Application + local training"],["Promotion","Exam + assessment center","Election or Chief appointment"],["Time","Scheduled shifts (24/48)","On-call + drills + meetings"],["Pay","Salary + full benefits","Unpaid, stipend or per call"],["Key to moving up","Scores, time in grade, evaluations","Participation, trust, leadership"],["Education","Often required","Helpful, less formal"],["Ranks","Full ladder","Often compressed"]];
   return `<div class="rk">
     <p class="sub">Every rank, what it takes to move up, and how the paid and volunteer paths differ. From the CVFD Suppression job-responsibility sheets and the published Command Staff.</p>
-    <div class="rk-sec" id="rk-ladder" data-toc="Rank ladder"><h2 class="rk-h">The rank ladder</h2>
-      <div class="rk-ladder">${ladder}</div>
-      <p class="sub">Bars show each rank's hourly pay range. Pay rises with rank, years of service and performance.</p>
-      <div class="flow"><span>FF / Engineer / Lt</span><i aria-hidden="true">›</i><span>Captain</span><i aria-hidden="true">›</i><span>Battalion Chief</span><i aria-hidden="true">›</i><span>Assistant Chief</span><i aria-hidden="true">›</i><span>Fire Chief</span></div>
-      <p class="sub">Who reports to whom.</p>
+    <div class="rk-sec" id="rk-ladder" data-toc="Rank flow"><h2 class="rk-h">Rank flow</h2>
+      <div class="bf-legend"><span class="bf-ff">Firefighter ranks</span><span class="bf-off">Officers</span><span class="bf-cs">Command staff</span></div>
+      <div class="bf-flow">${flow}</div>
+      <p class="sub">Pay rises with rank, years of service and performance.</p>
     </div>
     <div class="rk-sec" id="rk-paths" data-toc="How to move up"><h2 class="rk-h">How to move up</h2>
-      <div class="rk-paths"><div class="rk-ph rk-paid">Paid / career</div><div class="rk-ph rk-vol">Volunteer</div>${steps}</div>
+      <div class="bf-node bf-start"><b>You, at your current rank</b></div>
+      ${split}
+      <div class="bf-cols"><div class="bf-col"><div class="bf-ph bf-paid">Paid / career</div>${col(paid,"bf-paid")}</div><div class="bf-col"><div class="bf-ph bf-vol">Volunteer</div>${col(vol,"bf-vol")}</div></div>
+      ${merge}
+      <div class="bf-node bf-start bf-end"><b>Next rank</b><small>Probation or a period of proving yourself, then repeat</small></div>
     </div>
     <div class="rk-sec" id="rk-cmp" data-toc="Paid vs volunteer"><h2 class="rk-h">Paid vs volunteer</h2>
       <table class="rk-tbl"><thead><tr><th></th><th>Paid / career</th><th>Volunteer</th></tr></thead><tbody>${cmp.map(r=>`<tr><th>${esc(r[0])}</th><td>${esc(r[1])}</td><td>${esc(r[2])}</td></tr>`).join("")}</tbody></table>
