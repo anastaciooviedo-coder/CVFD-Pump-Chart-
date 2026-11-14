@@ -241,6 +241,34 @@ header.top .btn{flex:none}
 .blk.danger h4{color:var(--red)}
 .toc{margin:4px 0 2px}
 .card.su .card-h{display:flex;align-items:center;gap:10px}
+.rk-h{font-family:"Barlow Condensed",system-ui,sans-serif;font-size:20px;text-transform:uppercase;letter-spacing:.03em;margin:18px 0 8px}
+.rk-sec:first-of-type .rk-h{margin-top:6px}
+.rk-scale{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin:0 0 4px calc(34px + 7*8px)}
+.rk-ladder{display:flex;flex-direction:column;gap:6px}
+.rk-row{display:flex;gap:8px;align-items:stretch;margin-left:calc(var(--lvl)*8px)}
+.rk-n{flex:0 0 26px;display:flex;align-items:center;justify-content:center;border-radius:8px;font-family:"Barlow Condensed",system-ui,sans-serif;font-weight:700;font-size:18px;color:#fff;background:var(--plate)}
+.rk-main{flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--rc);border-radius:8px;padding:7px 10px}
+.rk-main b{display:block;font-family:"Barlow Condensed",system-ui,sans-serif;font-size:17px;text-transform:uppercase;letter-spacing:.02em;line-height:1.1}
+.rk-main small{display:block;color:var(--muted);font-size:12.5px;line-height:1.3;margin-top:2px}
+.rk-ff{--rc:var(--s2)} .rk-off{--rc:var(--s3)} .rk-cs{--rc:var(--plate)}
+.rk-ff .rk-n{background:var(--s2)} .rk-off .rk-n{background:var(--s3)}
+.rk-bar{position:relative;height:8px;border-radius:4px;background:var(--line);margin-top:7px}
+.rk-bar span{position:absolute;top:0;bottom:0;border-radius:4px;background:var(--rc)}
+.rk-pay{display:flex;justify-content:space-between;font-size:11.5px;font-weight:600;margin-top:2px;font-variant-numeric:tabular-nums}
+div.rk-cmd{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-top:4px}
+.rk-paths{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.rk-ph{font-family:"Barlow Condensed",system-ui,sans-serif;font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:center;color:#fff;border-radius:8px;padding:6px}
+.rk-ph.rk-paid{background:var(--s3)} .rk-ph.rk-vol{background:var(--s4)}
+.rk-step{background:var(--panel);border:1px solid var(--line);border-top:3px solid var(--pc);border-radius:8px;padding:7px 8px;position:relative}
+.rk-step.rk-paid{--pc:var(--s3)} .rk-step.rk-vol{--pc:var(--s4)}
+.rk-step i{font-style:normal;display:inline-flex;width:20px;height:20px;border-radius:50%;background:var(--pc);color:#fff;font-size:12px;font-weight:700;align-items:center;justify-content:center;margin-right:4px;vertical-align:-3px}
+.rk-step b{font-size:13.5px;line-height:1.2}
+.rk-step small{display:block;color:var(--muted);font-size:12px;line-height:1.3;margin-top:3px}
+.rk-tbl{width:100%;border-collapse:collapse;font-size:13px;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.rk-tbl th,.rk-tbl td{padding:7px 8px;border-top:1px solid var(--line);text-align:left;vertical-align:top;line-height:1.3}
+.rk-tbl thead th{border-top:0;font-family:"Barlow Condensed",system-ui,sans-serif;text-transform:uppercase;letter-spacing:.03em;color:#fff;background:var(--plate)}
+.rk-tbl thead th:nth-child(2){background:var(--s3)} .rk-tbl thead th:nth-child(3){background:var(--s4)}
+.rk-tbl tbody th{font-weight:600;width:28%}
 .prac-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
 .prac-tile{display:flex;flex-direction:column;gap:4px;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;color:var(--ink);text-decoration:none;padding-bottom:10px}
 .prac-tile b{font-family:"Barlow Condensed",system-ui,sans-serif;font-size:17px;text-transform:uppercase;letter-spacing:.02em;padding:0 10px;line-height:1.1}
