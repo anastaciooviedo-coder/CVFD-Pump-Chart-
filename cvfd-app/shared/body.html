@@ -1,0 +1,1090 @@
+<div class="wrap">
+  <header class="top">
+    <img src="__BADGE__" alt="Community Fire Training Division badge">
+    <div class="t">
+      <h1>__APPNAME__</h1>
+      <p class="sub">__APPSUB__</p>
+    </div>
+__MEBTN__
+    <button class="btn sm" id="edit-toggle" type="button" aria-pressed="false" hidden>Edit</button>
+  </header>
+  <p class="editing-flag" id="edit-flag" hidden>Edit mode is on. Changes save for everyone who uses the guide.</p>
+  <main id="view" aria-live="polite"></main>
+  <section id="cadre-view" class="view" hidden>
+    <div style="padding:12px 16px 0"><div class="chips" aria-label="Cadre"><a class="chip" href="#cadre" aria-pressed="true">Weekly Check-In</a><a class="chip" href="#td" aria-pressed="false">TD Dashboard</a><a class="chip" href="#td-docs" aria-pressed="false">Cadre Material</a><a class="chip" href="#roster" aria-pressed="false">Member roster</a></div></div>
+    <div class="ck-h">
+      <span class="brand">Training Division Cadre · Weekly Check-In</span>
+      <div class="ck-nav">
+        <button id="ck-prev" type="button" aria-label="Previous week">‹</button>
+        <h1 id="ck-weekTitle">Loading…</h1>
+        <button id="ck-next" type="button" aria-label="Next week">›</button>
+      </div>
+      <div class="ck-sub">
+        <span id="ck-weekTag"></span>
+        <span id="ck-prepared"></span>
+        <span class="live"><span class="dot" id="ck-liveDot"></span><span id="ck-liveTxt">Connecting…</span></span>
+        <button class="linkbtn" id="ck-todayBtn" type="button" hidden>Go to this week</button>
+        <button class="linkbtn" id="ck-copyBtn" type="button">Copy summary</button>
+        <button class="linkbtn" id="ck-docxBtn" type="button">Download Word</button>
+      </div>
+    </div>
+    <nav id="ck-jump" aria-label="Check-in sections"></nav>
+    <div id="ck-main"><div class="loading">Loading check-in…</div></div>
+  </section>
+  <footer>SOG text is copied from the CVFD Policies and Procedures manual. Always confirm against the current signed version.</footer>
+</div>
+<nav class="tabs" aria-label="Sections"><div class="in">
+__TABS__
+</div></nav>
+<div id="sheet" class="sheet" hidden><div class="in" role="dialog" aria-modal="true" aria-labelledby="sheet-title"></div></div>
+<div id="toast" class="toast" hidden role="status"></div>
+<script>
+const APP = "__MODE__"==="app";
+const MODE = "__MODE__";
+const PUMP_CHART = MODE==="td" ? "https://claude.ai/artifact/RvPwtLViEVKjuSNog4FPaH" : "pump.html";
+const CK_APP = APP ? "#cadre" : "https://claude.ai/artifact/1E5LRikxp3YuMgKBEiX164";
+const TD_APP = APP ? "#training" : "https://claude.ai/artifact/__TDSLUG__", GUIDE_APP = APP ? "#home" : "https://claude.ai/artifact/VXNhanbFibdV7S8NPGbCq3";
+const SERIES = {"1":["Administration","var(--s1)"],"2":["Operations","var(--s2)"],"3":["Fireground","var(--s3)"],"4":["EMS","var(--s4)"],"5":["Special Operations","var(--s5)"]};
+const $ = (s, r=document) => r.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const view = $("#view");
+
+// ---------- state ----------
+let SOGS = null, sogErr = null;
+const store = {sections:[], items:[], tools:[], ready:false, failed:false};
+let db = null, canEdit = false, editing = false;
+let lastHash = null, sizeTag = null, classTag = null, catTag = null;
+let cadreCtx = null, cadreStarted = false, authKnown = false;
+window.guideToast = msg => toast(msg);
+let sogFilter = "all", sogQuery = "", lastHighlight = "";
+const checked = new Set();
+try { JSON.parse(sessionStorage.getItem("sizeup-checked")||"[]").forEach(k=>checked.add(k)); } catch(e) {}
+
+// ---------- SOG data ----------
+fetch("sogs.json").then(r => { if(!r.ok) throw new Error(r.status); return r.json(); }).then(d => {
+  SOGS = d.map(s => {
+    let cur = "";
+    const blocks = s.b.map(b => { if (b.t==="h") cur = b.id; return {...b, sec: cur}; });
+    return {...s, b: blocks, series: s.s[0], hay: (s.s+" "+s.t+" "+s.b.map(b=>(b.id||"")+" "+b.x).join(" ")).toLowerCase()};
+  });
+  render();
+}).catch(e => { sogErr = e; render(); });
+
+// ---------- shared store (training, size-up, tools) ----------
+(async () => {
+  const timer = setTimeout(() => { if(!store.ready){ store.failed = true; render(); } }, 10000);
+  try {
+    db = await claude.use("db");
+    const user = await claude.use("user");
+    if (user) { try { canEdit = await user.canEdit(); } catch(e) { canEdit = false; } }
+    $("#edit-toggle").hidden = !canEdit;
+    { const ct = $("#cadre-tab"); if (ct) ct.hidden = !canEdit; }
+    cadreCtx = {db: null, user, canEdit};
+    userNs = user;
+    if (user && db && MODE!=="guide") initMe(user); else { me.noUser = true; }
+    cadreCtx.db = db; authKnown = true;
+    if (!db) { clearTimeout(timer); store.failed = true; render(); return; }
+    let pending = 3;
+    for (const name of ["sections","items","tools"]) {
+      db.collection(name).onSnapshot(snap => {
+        store[name] = [...snap.docs.map(d => ({id:d.id, ...d.data()})), ...(name==="items"?STATIC_ITEMS.filter(x=>!snap.docs.some(d=>d.id===x.id)):[])].sort((a,b)=>(a.order??0)-(b.order??0));
+        if (pending > 0 && --pending === 0) { store.ready = true; clearTimeout(timer); }
+        if (store.ready) render();
+      }, err => { store.failed = true; clearTimeout(timer); render(); });
+    }
+  } catch(e) { clearTimeout(timer); store.failed = true; render(); }
+})();
+
+// ---------- helpers ----------
+function sogTitle(s){ return s.t; }
+function linkRefs(html){
+  // turn 303 or 303.04 references into links to the SOG
+  return html.replace(/\b([1-5]\d{2})(\.\d{2})?\b/g, (m, n, sub) => SOGS && SOGS.find(s=>s.s===n) ? `<a href="#sog-${n}${sub?"-"+sub.slice(1):""}">${m}</a>` : m);
+}
+function inline(t){ return linkRefs(esc(t).replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>")); }
+function fill(h){ return h.replace(/\[([^\]\n]{1,80})\]/g, '<span class="fillin">$1</span>'); }
+function rich(t){ return fill(inline(t)); }
+function scriptLine(t){
+  // "**Label:** rest" -> label tag + script text
+  const m = t.match(/^\*\*(.+?)\*\*\s*(.*)$/);
+  if (!m) return null;
+  const label = m[1].replace(/:$/,""), rest = m[2].replace(/^[:\-–]\s*/,"");
+  const isQuote = /^["“]/.test(rest);
+  return `<span class="lab">${inline(label)}</span><span class="${isQuote?"script":"txt"}">${rich(rest)}</span>`;
+}
+function renderBody(text, itemKey, checklist, bookCtx){
+  const lines = String(text||"").split("\n").map(x=>x.trim()).filter(Boolean);
+  const heads = lines.filter(l=>l.startsWith("# ")).length;
+  const out = []; let n = 0, open = false;
+  for (const l of lines) {
+    if (l.startsWith("# ")) {
+      const h = l.slice(2);
+      if (heads >= 2) { if (open) out.push(`</div>`); const id = itemKey ? "h-"+itemKey+"-"+out.length : ""; out.push(`<div class="blk${/mayday|emergency/i.test(h)?" danger":""}" ${id?`id="${esc(id)}" data-toc="${esc(h)}"`:""}>`); open = true; }
+      out.push(`<h4>${inline(h)}</h4>`);
+    }
+    else if (l.startsWith("> ")) out.push(`<div class="say"><span class="mic" aria-hidden="true">RADIO</span><span>${rich(l.slice(2).replace(/^["“](.*)["”]$/,"$1"))}</span></div>`);
+    else if (bookCtx && /^- \[( |_|\d{1,2})\] /.test(l)) out.push(renderTask(l, itemKey, bookCtx));
+    else if (/^\*\*[^*]+\*\*$/.test(l) && l.includes("→")) out.push(`<div class="flow">${l.slice(2,-2).split("→").map(x=>`<span>${esc(x.trim())}</span>`).join('<i aria-hidden="true">›</i>')}</div>`);
+    else if (l.startsWith("- ")) {
+      const body = l.slice(2), sl = scriptLine(body);
+      if (checklist) { const k = itemKey+":"+(n++); out.push(`<label class="chk${sl?" scr":""}"><input type="checkbox" data-k="${esc(k)}" ${checked.has(k)?"checked":""}><span>${sl||rich(body)}</span></label>`); }
+      else if (sl) out.push(`<div class="srow">${sl}</div>`);
+      else out.push(`<div class="li"><span class="mk">•</span><span>${rich(body)}</span></div>`);
+    }
+    else out.push(`<p>${rich(l)}</p>`);
+  }
+  if (open) out.push(`</div>`);
+  return out.join("");
+}
+function tocFor(html){
+  const t = [...html.matchAll(/id="([^"]+)" data-toc="([^"]+)"/g)];
+  return t.length >= 3 ? `<nav class="toc chips" aria-label="Sections">${t.map(([,id,l])=>`<button class="chip" type="button" data-jump="${id}">${l}</button>`).join("")}</nav>` : "";
+}
+function toast(msg){ const t=$("#toast"); t.textContent=msg; t.hidden=false; clearTimeout(toast.h); toast.h=setTimeout(()=>t.hidden=true,2600); }
+function seriesOf(n){ return SERIES[String(n)[0]] || ["Other","var(--muted)"]; }
+function storeNotice(){
+  if (store.ready) return "";
+  if (store.failed) return `<div class="empty">Training content and tools could not load here. Open the guide while signed in to claude.ai to see them.</div>`;
+  return `<p class="sub">Loading…</p>`;
+}
+function editBtns(kind, id){
+  if (!editing || STATIC_IDS.has(id)) return "";
+  return `<div class="edit-bar"><button class="btn sm" data-act="up" data-kind="${kind}" data-id="${id}" type="button" aria-label="Move up">↑</button><button class="btn sm" data-act="down" data-kind="${kind}" data-id="${id}" type="button" aria-label="Move down">↓</button><button class="btn sm" data-act="edit" data-kind="${kind}" data-id="${id}" type="button">Edit</button></div>`;
+}
+
+// ---------- my training record ----------
+const ISO_CATS = [["company","Company training",192],["facility","Facilities",18],["hazmat","Haz Mat",6],["driver","Driver/Operator CE",12],["officer","Fire Officer CE",12],["other","Other (not ISO)",0]];
+const DESIG = {"Firefighter":["company","facility","hazmat"],"Driver/Operator":["company","facility","hazmat","driver"],"Fire Officer":["company","facility","hazmat","officer"]};
+const me = {uid:null, ready:false, failed:false, noUser:false, doc:null, certs:[], hours:[], books:{}, acct:""};
+let userNs = null, roster = null, rosterNames = {}, memberView = null, hoursYear = new Date().getFullYear(), pendingRender = false;
+function today(){ const d = new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function fmtDate(s){ if(!s) return ""; const [y,m,d] = s.split("-"); return m&&d ? `${+m}/${+d}/${y}` : s; }
+function hashStr(t){ let h = 5381; for (const ch of t) h = ((h<<5)+h+ch.charCodeAt(0))|0; return (h>>>0).toString(36); }
+function taskKey(itemId, text){ return (itemId+"~"+hashStr(text.trim())).replace(/[^A-Za-z0-9_\-~]/g,"_"); }
+function hasTabs(secId){ return itemsOf(secId).some(i=>i.tag); }
+function tagOf(it){ return it.tag || (hasTabs(it.section) ? "Overview" : ""); }
+function bookKey(secId, tag){ return (secId+"--"+(tag||"main")).replace(/[^A-Za-z0-9_\-.]/g,"-").slice(0,180); }
+function bookItems(secId, tag){ return itemsOf(secId).filter(i=>tagOf(i)===tag); }
+function parseTask(l){ const m = l.match(/^- \[( |_|\d{1,2})\] (.+)$/); if (!m) return null; return {kind: m[1]===" " ? "check" : m[1]==="_" ? "field" : "count", n: m[1]===" " ? 1 : +m[1]||0, text: m[2]}; }
+function taskList(it){ const out = []; for (const raw of String(it.body||"").split("\n")) { const t = parseTask(raw.trim()); if (!t || t.kind==="field") continue; const k = taskKey(it.id, t.text); if (t.kind==="check") out.push({k, text:t.text}); else for (let i=0;i<t.n;i++) out.push({k:k+"_"+i, text:t.text+" ("+(i+1)+" of "+t.n+")"}); } return out; }
+function tasksIn(it){ return taskList(it).map(t=>t.k); }
+function secTagOf(itemId){ const it = store.items.find(i=>i.id===itemId); return it ? [it.section, tagOf(it)] : ["",""]; }
+function itemCount(it){ const ks = tasksIn(it); if (!ks.length) return "›"; const bk = me.books[bookKey(it.section, tagOf(it))]; const d = bk&&bk.checks ? ks.filter(k=>bk.checks[k]).length : 0; return `<small style="font-size:14px">${d}/${ks.length}</small>`; }
+function renderTask(l, itemId, ctx){
+  const t = parseTask(l); const k = taskKey(itemId, t.text); const bk = ctx.bk; const dis = me.uid ? "" : "disabled";
+  if (t.kind==="field") { const v = bk && bk.fields && bk.fields[k] || ""; return `<label class="ffield"><span>${inline(t.text)}</span><input type="text" data-item="${esc(itemId)}" data-field="${esc(k)}" value="${esc(v)}" ${dis} data-keepval></label>`; }
+  if (t.kind==="check") { const c = bk && bk.checks && bk.checks[k];
+    return `<div class="task${c?" on":""}"><label><input type="checkbox" data-item="${esc(itemId)}" data-task="${esc(k)}" ${c?"checked":""} ${dis}><span>${inline(t.text)}</span></label>${c?`<div class="tmeta"><span>✓ ${fmtDate(c.d)}</span><input type="text" data-item="${esc(itemId)}" data-ini="${esc(k)}" value="${esc(c.by||"")}" placeholder="Signed by (initials)" aria-label="Signed by" maxlength="40"></div>`:""}</div>`; }
+  const boxes = Array.from({length:t.n}, (_,i) => { const kk = k+"_"+i, c = bk && bk.checks && bk.checks[kk]; return `<button type="button" class="ot${c?" "+c.ot:""}" data-item="${esc(itemId)}" data-ot="${esc(kk)}" ${dis} title="${c?(c.ot==="O"?"On a call":"Training")+", "+fmtDate(c.d):"Tap: O on a call, tap again: T training"}" aria-label="Performance ${i+1} of ${t.n}: ${c?(c.ot==="O"?"on a call":"in training"):"not done"}">${c?c.ot:""}</button>`; }).join("");
+  const done = bk && bk.checks ? Array.from({length:t.n},(_,i)=>bk.checks[k+"_"+i]).filter(Boolean).length : 0;
+  return `<div class="task"><div class="ph" style="display:flex;justify-content:space-between;gap:8px"><span>${inline(t.text)}</span><small class="sub">${done}/${t.n}</small></div><div class="otrow">${boxes}</div></div>`;
+}
+function bookInfo(secId, tag){
+  const items = bookItems(secId, tag); const keys = items.flatMap(tasksIn);
+  if (!keys.length) return null;
+  const sec = store.sections.find(s=>s.id===secId);
+  const key = bookKey(secId, tag), bk = me.books[key];
+  const done = bk && bk.checks ? keys.filter(k=>bk.checks[k]).length : 0;
+  return {key, secId, tag, title: tag || (sec?sec.title:"Book"), sub: sec?sec.title:"", total: keys.length, done, bk, items};
+}
+function pct(a,b){ return b ? Math.round(a*100/b) : 0; }
+function bar(p, c){ return `<div class="bar" role="progressbar" aria-valuenow="${p}" aria-valuemin="0" aria-valuemax="100"${c?` style="--c:${c}"`:""}><i style="width:${Math.min(100,p)}%"></i></div>`; }
+function bookHref(secId, tag){ return "#cat-"+secId+(tag?"~"+encodeURIComponent(tag):""); }
+function isoTotals(hours, year, desig){
+  const by = {}; for (const [k] of ISO_CATS) by[k] = 0;
+  for (const h of hours) if (String(h.date||"").startsWith(String(year))) by[h.cat] = (by[h.cat]||0) + (+h.hours||0);
+  const need = DESIG[desig||"Firefighter"] || DESIG.Firefighter;
+  const req = need.reduce((s,k)=>s+ISO_CATS.find(c=>c[0]===k)[2],0);
+  const applied = need.reduce((s,k)=>s+Math.min(by[k], ISO_CATS.find(c=>c[0]===k)[2]),0);
+  const round = n => Math.round(n*100)/100;
+  for (const k in by) by[k] = round(by[k]);
+  return {by, req, applied: round(applied), pct: pct(applied, req), need};
+}
+function certStatus(c){
+  if (!c.expires) return ["No expiration",""];
+  const days = Math.round((new Date(c.expires+"T00:00") - new Date(today()+"T00:00"))/86400000);
+  if (days < 0) return ["Expired "+fmtDate(c.expires),"bad"];
+  if (days <= 90) return ["Expires "+fmtDate(c.expires),"warn"];
+  return ["Valid to "+fmtDate(c.expires),"ok"];
+}
+async function initMe(user){
+  try {
+    const uid = await user.id();
+    if (!uid) { me.noUser = true; render(); return; }
+    me.uid = uid;
+    try { const v = await user.me(); me.acct = (v && v.name) || ""; } catch(e) {}
+    const ref = meRef(); let n = 4;
+    const tick = () => { if (n > 0 && --n === 0) me.ready = true; if (me.ready) softRender(); };
+    const fail = () => { me.failed = true; softRender(); };
+    ref.onSnapshot(s => { me.doc = s.exists ? s.data() : null; tick(); }, fail);
+    ref.collection("certs").onSnapshot(s => { me.certs = s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(a.expires||"9").localeCompare(String(b.expires||"9"))); tick(); }, fail);
+    ref.collection("hours").onSnapshot(s => { me.hours = s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(b.date).localeCompare(String(a.date))); tick(); }, fail);
+    ref.collection("books").onSnapshot(s => { me.books = Object.fromEntries(s.docs.map(d=>[d.id,{id:d.id,...d.data()}])); tick(); }, fail);
+  } catch(e) { me.failed = true; softRender(); }
+}
+function meRef(uid){ return db.collection("members").doc(uid||me.uid); }
+async function ensureMe(){
+  if (me.doc) return;
+  const base = {name:"", rank:"", station:"", empId:"", designation:"Firefighter", created: today()};
+  await meRef().set(base); me.doc = base;
+}
+function softRender(){
+  const a = document.activeElement;
+  if (a && view.contains(a) && a.closest("[data-keep]") && /INPUT|TEXTAREA|SELECT/.test(a.tagName)) { pendingRender = true; return; }
+  render();
+}
+view.addEventListener("focusout", () => { if (pendingRender) setTimeout(() => { const a = document.activeElement; if (!(a && view.contains(a) && a.closest("[data-keep]"))) { pendingRender = false; render(); } }, 0); });
+
+function vMe(){
+  const head = `<div class="gh"><h2>My Training Record</h2>${canEdit?`<a class="sub" href="#roster">Member roster ›</a>`:""}</div>`;
+  if (!db || store.failed && !me.uid) return `<section class="view">${head}<div class="empty">Open the guide while signed in to claude.ai to keep your own training record.</div></section>`;
+  if (me.noUser) return `<section class="view">${head}<div class="empty">Your training record needs a signed-in claude.ai account in your organization.</div></section>`;
+  if (me.failed) return `<section class="view">${head}<div class="empty">Your record could not load. If you only have view access, ask the Training Division to give you access that lets you use the guide.</div></section>`;
+  if (!me.ready) return `<section class="view">${head}<p class="sub">Loading your record…</p></section>`;
+  const p = me.doc || {};
+  const T = isoTotals(me.hours, hoursYear, p.designation);
+  const years = [...new Set([new Date().getFullYear(), ...me.hours.map(h=>+String(h.date).slice(0,4)).filter(Boolean)])].sort((a,b)=>b-a);
+  const yHours = me.hours.filter(h=>String(h.date).startsWith(String(hoursYear)));
+  const books = Object.values(me.books).map(b => ({b, info: bookInfo(b.section, b.tag)})).filter(x=>x.info);
+  return `<section class="view">${head}
+    <p class="sub">Your record is visible to you and to Training Division staff.</p>
+    <div class="card"><div class="card-h"><h3>Profile</h3></div><form class="card-b" id="pf" data-keep>
+      <label class="field"><span>Full name</span><input type="text" id="pf-name" value="${esc(p.name||"")}" placeholder="${esc(me.acct||"First and last name")}" autocomplete="name"></label>
+      <div class="grid2">
+        <label class="field"><span>Rank</span><input type="text" id="pf-rank" value="${esc(p.rank||"")}" placeholder="e.g. Firefighter"></label>
+        <label class="field"><span>Station / shift</span><input type="text" id="pf-station" value="${esc(p.station||"")}"></label>
+        <label class="field"><span>Employee ID</span><input type="text" id="pf-empId" value="${esc(p.empId||"")}"></label>
+        <label class="field"><span>ISO designation</span><select id="pf-designation">${Object.keys(DESIG).map(d=>`<option ${ (p.designation||"Firefighter")===d?"selected":""}>${d}</option>`).join("")}</select></label>
+      </div>
+      <div class="actions"><button class="btn primary" type="submit">Save profile</button></div>
+    </form></div>
+
+    <div class="card"><div class="card-h"><h3>ISO hours ${hoursYear}</h3></div><div class="card-b">
+      ${years.length>1?`<div class="chips" role="group" aria-label="Year">${years.map(y=>`<button class="chip" type="button" data-year="${y}" aria-pressed="${y===hoursYear}">${y}</button>`).join("")}</div>`:""}
+      <div class="prog"><div class="ph"><b>${esc(p.designation||"Firefighter")}: ${T.applied} of ${T.req} hrs</b><span>${T.pct}%</span></div>${bar(T.pct)}</div>
+      ${ISO_CATS.filter(([k,,t])=>T.need.includes(k) || T.by[k]).map(([k,l,t])=>`<div class="prog"><div class="ph"><span>${l}</span><span>${T.by[k]}${t&&T.need.includes(k)?" / "+t:""} hrs</span></div>${t&&T.need.includes(k)?bar(pct(T.by[k],t),"var(--s2)"):""}</div>`).join("")}
+      <h4>Log training hours</h4>
+      <form id="hf" data-keep class="grid2">
+        <label class="field"><span>Date</span><input type="date" id="hf-date" value="${today()}" required></label>
+        <label class="field"><span>Category</span><select id="hf-cat">${ISO_CATS.map(([k,l])=>`<option value="${k}">${l}</option>`).join("")}</select></label>
+        <label class="field"><span>Hours</span><input type="number" id="hf-hours" min="0.25" max="24" step="0.25" required inputmode="decimal"></label>
+        <label class="field"><span>What was it?</span><input type="text" id="hf-note" placeholder="e.g. Hose drill, Station 2"></label>
+        <div class="actions" style="grid-column:1/-1"><button class="btn primary" type="submit">Add hours</button></div>
+      </form>
+      ${yHours.length?`<h4>${yHours.length} entr${yHours.length===1?"y":"ies"} in ${hoursYear}</h4>${yHours.map(h=>`<div class="rowx"><div><b>${esc(h.hours)} hrs · ${esc((ISO_CATS.find(c=>c[0]===h.cat)||[,h.cat])[1])}</b><small>${fmtDate(h.date)}${h.note?" · "+esc(h.note):""}</small></div><button class="xbtn" type="button" data-del-hours="${esc(h.id)}" aria-label="Delete entry">×</button></div>`).join("")}`:`<p class="sub">No hours logged for ${hoursYear} yet.</p>`}
+    </div></div>
+
+    <div class="card"><div class="card-h"><h3>Certifications</h3></div><div class="card-b">
+      ${me.certs.length?me.certs.map(c=>{ const [st,cls] = certStatus(c); return `<div class="rowx"><div><b>${esc(c.name)}</b><small>${c.number?"#"+esc(c.number)+" · ":""}${c.issued?"Issued "+fmtDate(c.issued)+" · ":""}<span class="pill ${cls}">${esc(st)}</span></small></div><button class="xbtn" type="button" data-del-cert="${esc(c.id)}" aria-label="Delete certification">×</button></div>`; }).join(""):`<p class="sub">No certifications added yet.</p>`}
+      <h4>Add a certification</h4>
+      <form id="cf" data-keep class="grid2">
+        <label class="field" style="grid-column:1/-1"><span>Certification</span><input type="text" id="cf-name" required placeholder="e.g. TCFP Fire Officer I" list="cert-list"></label>
+        <datalist id="cert-list"><option>TCFP Structure Fire Protection Personnel (Basic FF)</option><option>TCFP/SFFMA Firefighter II</option><option>TCFP Driver/Operator-Pumper</option><option>TCFP/SFFMA Fire Officer I</option><option>TCFP/SFFMA Instructor I</option><option>TCFP Incident Safety Officer</option><option>Texas Class B Exempt license</option><option>EMT-Basic</option><option>CPR / BLS</option><option>NIMS ICS-100</option><option>NIMS ICS-200</option><option>NIMS ICS-300</option><option>Hazmat Operations</option></datalist>
+        <label class="field"><span>Number</span><input type="text" id="cf-number"></label>
+        <label class="field"><span>Issued</span><input type="date" id="cf-issued"></label>
+        <label class="field"><span>Expires</span><input type="date" id="cf-expires"></label>
+        <div class="actions" style="grid-column:1/-1;align-self:end"><button class="btn primary" type="submit">Add</button></div>
+      </form>
+    </div></div>
+
+    <div class="card"><div class="card-h"><h3>My phase books & task books</h3></div><div class="card-b">
+      ${books.length?books.map(({info})=>`<a class="rowx" href="${bookHref(info.secId, info.tag)}" style="text-decoration:none;color:inherit"><div class="prog"><div class="ph"><b>${esc(info.title)}</b><span>${info.done} / ${info.total}</span></div>${bar(pct(info.done,info.total))}<small>${esc(info.sub)} · started ${fmtDate(info.bk.started)}</small></div><span class="chev">›</span></a>`).join(""):`<p class="sub">You haven't started a book. Open one under Training › Position Qualification or Officer Development and tap Start.</p>`}
+      <div class="actions" style="justify-content:flex-start">${availableBooks().filter(b=>!me.books[b.key]).map(b=>`<a class="btn sm" href="${bookHref(b.secId,b.tag)}">${esc(b.title)}</a>`).join("")}</div>
+    </div></div>
+  </section>`;
+}
+function availableBooks(){
+  const out = [];
+  for (const s of store.sections.filter(s=>s.area==="training")) {
+    const tags = [...new Set(itemsOf(s.id).map(tagOf))];
+    for (const t of tags) { const b = bookInfo(s.id, t); if (b) out.push(b); }
+  }
+  return out;
+}
+function vBookBar(secId, tag){
+  const b = bookInfo(secId, tag); if (!b) return "";
+  const p = pct(b.done, b.total);
+  if (!me.uid) return `<div class="bookbar"><div class="prog"><div class="ph"><b>${esc(b.title)} tracker</b><span>${b.total} tasks</span></div></div><p class="sub">${me.noUser||!db?"Sign in to claude.ai to fill this book out and track your progress.":"Loading your progress…"}</p></div>`;
+  return `<div class="bookbar"><div class="prog"><div class="ph"><b>${b.bk?"My progress":"Fill out this book"}</b><span>${b.done} of ${b.total} tasks · ${p}%</span></div>${bar(p)}</div>
+    ${b.bk?`<p class="sub">Started ${fmtDate(b.bk.started)}. Open a section below and check off tasks as they're signed. Your progress shows on <a href="#me">My record</a>.</p>`:`<div class="actions" style="justify-content:flex-start"><button class="btn primary" type="button" data-start-book="${esc(secId)}" data-tag="${esc(tag)}">Start this book</button></div>`}</div>`;
+}
+async function startBook(secId, tag){
+  if (!me.uid) { toast("Sign in to claude.ai to track a book."); return null; }
+  const b = bookInfo(secId, tag); if (!b) return null;
+  if (me.books[b.key]) return me.books[b.key];
+  try {
+    await ensureMe();
+    const data = {title:b.title, section:secId, tag, started:today(), checks:{}, fields:{}};
+    await meRef().collection("books").doc(b.key).set(data);
+    me.books[b.key] = {id:b.key, ...data};
+    await meRef().update({books:{[b.key]:{title:b.title, section:secId, tag, done:0, total:b.total, updated:today()}}, updatedAt: nowIso(), lastChange: "Started "+b.title});
+    toast("Book started"); return me.books[b.key];
+  } catch(e) { toast("Could not start the book. Ask the Training Division for access to use the guide."); return null; }
+}
+async function setCheck(itemId, k, val){
+  const it = store.items.find(i=>i.id===itemId); if (!it) return;
+  const tag = tagOf(it); let bk = me.books[bookKey(it.section, tag)];
+  if (!bk) bk = await startBook(it.section, tag); if (!bk) { render(); return; }
+  if (val && val.by === "" && bk.checks && bk.checks[k] && bk.checks[k].by) val.by = bk.checks[k].by;
+  bk.checks = {...(bk.checks||{}), [k]: val};
+  render();
+  try {
+    await meRef().collection("books").doc(bk.id).update({checks:{[k]:val}});
+    const info = bookInfo(it.section, tag);
+    await meRef().update({books:{[bk.id]:{title:info.title, section:it.section, tag, done:info.done, total:info.total, updated:today()}}, updatedAt: nowIso(), lastChange: (val?"Signed off a task in ":"Unchecked a task in ")+info.title});
+  } catch(e) { toast("Could not save that check."); }
+}
+async function delHours(id){
+  try { await meRef().collection("hours").doc(id).delete(); me.hours = me.hours.filter(h=>h.id!==id); await saveIsoSummary(); await touch("Deleted an hours entry"); toast("Entry deleted"); render(); } catch(e) { toast("Could not delete."); }
+}
+async function delCert(id){
+  const gone = me.certs.find(c=>c.id===id);
+  try { await meRef().collection("certs").doc(id).delete(); await touch("Removed certification: "+(gone&&gone.name||""), {certs: certSummary(me.certs.filter(c=>c.id!==id))}); toast("Certification removed"); } catch(e) { toast("Could not delete."); }
+}
+async function setBookText(itemId, kind, k, value){
+  const it = store.items.find(i=>i.id===itemId); if (!it) return;
+  const tag = tagOf(it); let bk = me.books[bookKey(it.section, tag)];
+  if (!bk) bk = await startBook(it.section, tag); if (!bk) return;
+  try {
+    if (kind==="ini") { const cur = bk.checks && bk.checks[k]; if (!cur) return; cur.by = value; await meRef().collection("books").doc(bk.id).update({checks:{[k]:{...cur, by:value}}}); }
+    else { bk.fields = {...(bk.fields||{}), [k]: value}; await meRef().collection("books").doc(bk.id).update({fields:{[k]:value}}); }
+    toast("Saved");
+  } catch(e) { toast("Could not save."); }
+}
+function nowIso(){ return new Date().toISOString(); }
+function certSummary(list){ return list.map(c=>({name:c.name||"", expires:c.expires||""})).slice(0,40); }
+async function touch(change, extra){ try { await meRef().update({updatedAt: nowIso(), lastChange: change, ...(extra||{})}); } catch(e) {} }
+function ago(iso){ if (!iso) return ""; const s = (Date.now()-new Date(iso).getTime())/1000; if (s<90) return "just now"; if (s<3600) return Math.round(s/60)+" min ago"; if (s<86400) return Math.round(s/3600)+" hr ago"; return fmtDate(iso.slice(0,10)); }
+function needsReview(m){ return !!(m.updatedAt && (!m.reviewedAt || m.updatedAt > m.reviewedAt)); }
+async function saveIsoSummary(){
+  const T = isoTotals(me.hours, hoursYear, me.doc && me.doc.designation);
+  try { await meRef().update({iso:{[hoursYear]:{by:T.by, applied:T.applied, req:T.req, pct:T.pct}}}); } catch(e) {}
+}
+
+// ---------- staff roster ----------
+function startRoster(){
+  if (roster || !db || !canEdit) return;
+  roster = {list:[], ready:false, failed:false};
+  db.collection("members").onSnapshot(async s => {
+    roster.list = s.docs.map(d=>({id:d.id, ...d.data()})); roster.ready = true;
+    const missing = roster.list.map(m=>m.id).filter(id=>!(id in rosterNames));
+    if (missing.length && userNs && userNs.profiles) { try { const ps = await userNs.profiles(missing.slice(0,64)); for (const id of missing) rosterNames[id] = (ps[id] && ps[id].name) || ""; } catch(e) {} }
+    softRender();
+  }, () => { roster.failed = true; softRender(); });
+}
+function memberName(m){ return m.name || rosterNames[m.id] || "Member (no name yet)"; }
+function vRoster(){
+  if (!canEdit) return vCadreGate();
+  startRoster();
+  const head = `${cadreNav("roster")}<div class="gh"><h2>Member roster</h2>${roster&&roster.ready?`<span class="sub">${roster.list.length} members</span>`:""}</div>`;
+  if (!roster || !roster.ready) return `<section class="view">${head}<p class="sub">${roster&&roster.failed?"The roster could not load.":"Loading…"}</p></section>`;
+  const y = new Date().getFullYear();
+  const list = [...roster.list].sort((a,b)=>(needsReview(b)-needsReview(a)) || (needsReview(a)&&needsReview(b) ? String(b.updatedAt).localeCompare(String(a.updatedAt)) : memberName(a).localeCompare(memberName(b))));
+  const nNew = list.filter(needsReview).length;
+  const row = m => { const iso = m.iso && m.iso[y]; const bks = Object.values(m.books||{}); const exp = (m.certs||[]).filter(c=>certStatus(c)[1]!=="ok" && c.expires).length; return `<a class="row-btn" href="#member-${esc(m.id)}" style="--c:${needsReview(m)?"var(--red)":"var(--s4)"}"><span class="n">${iso?iso.pct+"%":"–"}</span><span class="m"><b>${esc(memberName(m))} ${needsReview(m)?`<span class="pill bad">New</span>`:""}</b><small>${m.lastChange?esc(m.lastChange)+" · "+esc(ago(m.updatedAt)):esc([m.rank,m.station,m.designation].filter(Boolean).join(" · "))}${(m.certs||[]).length?" · "+(m.certs.length)+" certs"+(exp?` (${exp} expiring)`:""):""}${bks.length?" · "+bks.map(b=>esc(b.title)+" "+pct(b.done,b.total)+"%").join(", "):""}</small></span><span class="chev">›</span></a>`; };
+  return `<section class="view">${head}
+    <p class="sub">Updates live as members save their profile, certifications, hours and book sign-offs. ISO % is for ${y}.</p>
+    ${nNew?`<p><span class="pill bad">${nNew} to review</span></p>`:""}
+    ${list.length?`<div class="list">${list.map(row).join("")}</div>`:`<div class="empty">No members have set up a record yet. Share the guide with members as Contributors ("can use") so they can.</div>`}
+  </section>`;
+}
+function loadMember(uid){
+  if (memberView && memberView.unsubs) memberView.unsubs.forEach(u=>{ try{ u&&u(); }catch(e){} });
+  const mv = memberView = {uid, ready:false, certs:[], hours:[], books:[], unsubs:[]};
+  const ref = meRef(uid); let n = 3;
+  const tick = () => { if (n > 0 && --n === 0) mv.ready = true; if (mv.ready && memberView===mv) softRender(); };
+  const fail = () => { mv.failed = true; if (memberView===mv) softRender(); };
+  try {
+    mv.unsubs.push(ref.collection("certs").onSnapshot(s => { mv.certs = s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(a.expires||"9").localeCompare(String(b.expires||"9"))); tick(); }, fail));
+    mv.unsubs.push(ref.collection("hours").onSnapshot(s => { mv.hours = s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(b.date).localeCompare(String(a.date))); tick(); }, fail));
+    mv.unsubs.push(ref.collection("books").onSnapshot(s => { mv.books = s.docs.map(d=>({id:d.id,...d.data()})); tick(); }, fail));
+  } catch(e) { fail(); }
+}
+function vMember(uid){
+  if (!canEdit) return vCadreGate();
+  startRoster();
+  if (!memberView || memberView.uid !== uid) { loadMember(uid); }
+  const m = roster && roster.list.find(x=>x.id===uid);
+  const head = `<a class="sub" href="#roster">‹ Member roster</a>`;
+  if (!m || !memberView.ready) return `<section class="view">${head}<p class="sub">${memberView&&memberView.failed?"This record could not load.":"Loading…"}</p></section>`;
+  const y = new Date().getFullYear(), T = isoTotals(memberView.hours, y, m.designation);
+  return `<section class="view" style="--c:var(--s4)">${head}
+    <div class="doc-h"><span class="num">${esc([m.rank, m.station].filter(Boolean).join(" · ")||"Member")}</span><h1>${esc(memberName(m))}</h1><span class="meta">${esc(m.designation||"Firefighter")}${m.empId?" · ID "+esc(m.empId):""}</span></div>
+    <div class="card"><div class="card-b"><div class="rowx"><div><b>${needsReview(m)?`<span class="pill bad">New changes</span> `:`<span class="pill ok">Reviewed</span> `}${esc(m.lastChange||"No changes logged yet")}</b><small>${m.updatedAt?"Last update "+esc(ago(m.updatedAt)):""}${m.reviewedAt?" · Reviewed "+esc(ago(m.reviewedAt)):""}</small></div>${needsReview(m)?`<button class="btn sm primary" type="button" data-review="${esc(m.id)}">Mark reviewed</button>`:""}</div></div></div>
+    <div class="card"><div class="card-h"><h3>ISO hours ${y}</h3></div><div class="card-b">
+      <div class="prog"><div class="ph"><b>${T.applied} of ${T.req} hrs</b><span>${T.pct}%</span></div>${bar(T.pct)}</div>
+      ${ISO_CATS.filter(([k])=>T.need.includes(k)||T.by[k]).map(([k,l,t])=>`<div class="tbl"><span>${l}</span><span>${T.by[k]}${t&&T.need.includes(k)?" / "+t:""} hrs</span></div>`).join("")}
+      ${memberView.hours.slice(0,30).map(h=>`<div class="rowx"><div><b>${m.reviewedAt && h.addedAt && h.addedAt > m.reviewedAt || !m.reviewedAt && h.addedAt ? `<span class="pill bad">New</span> ` : ""}${esc(h.hours)} hrs · ${esc((ISO_CATS.find(c=>c[0]===h.cat)||[,h.cat])[1])}</b><small>${fmtDate(h.date)}${h.note?" · "+esc(h.note):""}</small></div></div>`).join("")}
+    </div></div>
+    <div class="card"><div class="card-h"><h3>Certifications</h3></div><div class="card-b">
+      ${memberView.certs.length?memberView.certs.map(c=>{ const [st,cls]=certStatus(c); return `<div class="rowx"><div><b>${m.reviewedAt && c.addedAt && c.addedAt > m.reviewedAt || !m.reviewedAt && c.addedAt ? `<span class="pill bad">New</span> ` : ""}${esc(c.name)}</b><small>${c.number?"#"+esc(c.number)+" · ":""}${c.issued?"Issued "+fmtDate(c.issued)+" · ":""}${c.expires?"Expires "+fmtDate(c.expires)+" · ":""}<span class="pill ${cls}">${esc(st)}</span></small></div></div>`; }).join(""):`<p class="sub">None entered.</p>`}
+    </div></div>
+    <div class="card"><div class="card-h"><h3>Books</h3></div><div class="card-b">
+      ${memberView.books.length?memberView.books.map(b=>{ const info = bookInfo(b.section, b.tag); const done = info ? info.items.flatMap(i=>taskList(i).map(x=>({k:x.k, t:x.text}))) : []; const ok = done.filter(x=>b.checks&&b.checks[x.k]);
+        return `<div class="prog"><div class="ph"><b>${esc(b.title)}</b><span>${ok.length} / ${done.length}</span></div>${bar(pct(ok.length,done.length))}<small class="sub">Started ${fmtDate(b.started)}${Object.entries(b.fields||{}).filter(([,v])=>v).length?" · "+Object.values(b.fields).filter(Boolean).map(esc).join(" · "):""}</small></div>
+        ${ok.length?`<details><summary class="sub">Completed tasks</summary>${ok.map(x=>`<div class="rowx"><div>${inline(x.t)}<small>${fmtDate(b.checks[x.k].d)}${b.checks[x.k].ot?" · "+(b.checks[x.k].ot==="O"?"on a call":"training"):""}${b.checks[x.k].by?" · "+esc(b.checks[x.k].by):""}</small></div></div>`).join("")}</details>`:""}`; }).join(""):`<p class="sub">No books started.</p>`}
+    </div></div>
+  </section>`;
+}
+
+// ---------- TD master dashboard (Cadre only) ----------
+const TD_STATUS = ["Not Started","In Progress","Pending","Complete","On Hold","Needs Attention","Closed"];
+const TD_LISTS = {status: TD_STATUS, priority:["High","Medium","Low"], program:["TCFP","SFFMA","Academy","Training Division"], result:["Pending","Pass","Fail","Incomplete","Withdrawn"], phase:["Completed","Failed 1st / Completed","Open","Failed"], yn:["Yes","No","N/A"]};
+const TD_TABLES = {
+  courses: {title:"TCFP Courses", cols:[["course","Course"],["tpa","TPA #"],["status","Status","status"],["start","Start date","date"],["end","End date","date"],["lead","Lead instructor"],["tpaApproved","TPA approved","yn"],["delivery","Delivery"],["final","Final date","date"],["skills","Skills date","date"],["roster","Roster count"],["exam","Exam result / pass %","result"],["closeout","Closeout","status"],["notes","Deficiency / notes","area"]], sub:r=>[r.status, r.tpa&&"TPA "+r.tpa, r.start&&fmtDate(r.start)+(r.end?" to "+fmtDate(r.end):""), r.closeout&&"Closeout: "+r.closeout]},
+  actions: {title:"Action Items", cols:[["item","Action item"],["program","Program","program"],["owner","Owner"],["priority","Priority","priority"],["status","Status","status"],["due","Due date","date"],["related","Related course / TPA"],["notes","Notes","area"]], sub:r=>[r.priority, r.status, r.owner, r.due&&"Due "+fmtDate(r.due)]},
+  cadets: {title:"SFFMA Academy", cols:[["cadet","Cadet"],["verified","SFFMA member verified","yn"],["objectives","FF I objectives"],["hzAware","HazMat Awareness"],["hzOps","HazMat Ops/MS"],["courses","Required courses"],["skills","FF I skills"],["written","FF I written"],["exam","FF I exam result","result"],["ff1","FF I certified","yn"],["ff2","FF II certified","yn"],["status","Overall status","status"],["notes","Notes","area"]], sub:r=>[r.status, r.ff1==="Yes"&&"FF I", r.ff2==="Yes"&&"FF II"]},
+  probation: {title:"Probationary Phases", cols:[["name","Name"],["start","Probation start","date"],["p1due","Phase 1 due","date"],["p1","Phase 1 status","phase"],["p2due","Phase 2 due","date"],["p2","Phase 2 status","phase"],["p3due","Phase 3 due","date"],["p3","Phase 3 status","phase"],["end","End of probation","date"],["notes","Notes","area"]], sub:r=>[ [1,2,3].map(n=>"P"+n+": "+(r["p"+n]||"open")).join(" · "), r.end&&"Ends "+fmtDate(r.end), r.notes]},
+  books: {title:"Open Skills Books", cols:[["member","Member"],["program","Program / book"],["classB","Class B / prerequisite"],["pumper","Pumper / engine"],["aerial","Aerial"],["status","Status","status"],["next","Next step"],["notes","Notes","area"]], sub:r=>[r.program, r.status, r.next]},
+  docs: {title:"Cadre Only Material", cols:[["title","Title"],["body","Content","area"]], sub:r=>[r.updatedAt&&"Updated "+fmtDate(r.updatedAt)]},
+  taskbook: {title:"Taskbook Detail", cols:[["name","Member name"],["empId","Employee ID"],["rank","Rank / title"],["station","Station"],["hire","Hire date","date"],["probOpen","Probationary: open?"],["probOpenDate","Probationary: open date","date"],["probDue","Probationary: due date","date"],["probStatus","Probationary: status"],["fdnOpen","Foundations book open","yn"],["fdnOpenDate","Foundations open date","date"],["fdnDue","Foundations due date","date"],["eoOpen","Engine Operator: open?","yn"],["eoOpenDate","Engine Operator: open date","date"],["eoDue","Engine Operator: due date","date"],["eoStatus","Engine Operator: status"],["aerialStatus","Aerial Operator: status"],["ltBook","Lieutenant quals book"],["cbIssue","Class B DL issue date","date"],["cbNum","Class B DL #"],["cbExp","Class B DL expiration","date"],["upTo","Uploaded to (path/URL)"],["upOn","Uploaded on","date"],["upBy","Uploaded by"],["notes","Notes","area"],["updated","Last updated"]], sub:r=>[r.station&&"Stn "+r.station, r.eoStatus&&"EO: "+r.eoStatus, r.cbExp&&"Class B exp "+fmtDate(r.cbExp)]},
+};
+const TD_PRIMARY = {docs:"title", courses:"course", actions:"item", cadets:"cadet", probation:"name", books:"member", taskbook:"name"};
+const td = {started:false, ready:0, failed:false, rows:{}, main:null, q:""};
+function startTd(){
+  if (td.started || !db || !canEdit) return; td.started = true;
+  const base = db.collection("td").doc("main");
+  base.onSnapshot(s => { td.main = s.exists ? s.data() : {}; softRender(); }, () => { td.failed = true; softRender(); });
+  for (const k of Object.keys(TD_TABLES)) {
+    td.rows[k] = null;
+    base.collection(k).onSnapshot(s => { td.rows[k] = s.docs.map(d=>({id:d.id, ...d.data()})).sort((a,b)=>(a.order??0)-(b.order??0) || String(a[TD_PRIMARY[k]]||"").localeCompare(String(b[TD_PRIMARY[k]]||""))); softRender(); }, () => { td.failed = true; softRender(); });
+  }
+}
+function cadreNav(cur){
+  return `<div class="chips" role="tablist" aria-label="Cadre">${APP?`<a class="chip" href="#cadre" aria-pressed="${cur==="cadre"}">Weekly Check-In</a>`:`<a class="chip" href="${CK_APP}" target="_blank" rel="noopener">Weekly Check-In ↗</a>`}${[["td","TD Dashboard"],["td-docs","Cadre Material"],["roster","Member roster"]].map(([h,l])=>`<a class="chip" href="#${h}" aria-pressed="${cur===h}">${l}</a>`).join("")}</div>`;
+}
+function daysFromToday(s){ return s ? Math.round((new Date(s+"T00:00") - new Date(today()+"T00:00"))/86400000) : null; }
+function isDone(v){ return /^(completed?|cleared|closed)/i.test(String(v||"").trim()); }
+function tdMetrics(){
+  const R = k => td.rows[k] || [];
+  const cnt = (k, f) => R(k).filter(f).length;
+  const due45 = (d, st) => r => { const n = daysFromToday(r[d]); return n !== null && n >= 0 && n <= 45 && !isDone(r[st]); };
+  return {
+    actionStatus: ["Not Started","In Progress","Pending","Complete"].map(s=>[s, cnt("actions", r=>r.status===s)]),
+    tcfp: [["Active TCFP courses", cnt("courses", r=>["In Progress","Pending"].includes(r.status))],["Courses needing attention", cnt("courses", r=>r.status==="Needs Attention")],["Courses awaiting closeout", cnt("courses", r=>r.closeout==="Pending")]],
+    td: [["Open action items", cnt("actions", r=>r.status && r.status!=="Complete")],["High priority open", cnt("actions", r=>r.priority==="High" && r.status!=="Complete")],["Completed actions", cnt("actions", r=>r.status==="Complete")],["Open skills books", cnt("books", r=>r.status && r.status!=="Complete")]],
+    academy: [["Academy cadets", R("cadets").length],["Cadets needing attention", cnt("cadets", r=>r.status==="Needs Attention")],["FF I certified", cnt("cadets", r=>r.ff1==="Yes")],["FF II certified", cnt("cadets", r=>r.ff2==="Yes")]],
+    probie: [["Probationary members", R("probation").length],["Phase 1 due next 45 days", cnt("probation", due45("p1due","p1"))],["Phase 2 due next 45 days", cnt("probation", due45("p2due","p2"))],["Phase 3 due next 45 days", cnt("probation", due45("p3due","p3"))],["Taskbook members loaded", R("taskbook").length],["Engine Operator open", cnt("taskbook", r=>/^open/i.test(r.eoStatus||""))],["Foundations open", cnt("taskbook", r=>/^yes/i.test(r.fdnOpen||""))],["Books needing attention", cnt("books", r=>r.status==="Needs Attention")]],
+  };
+}
+function metricGrid(list){ return `<div class="mgrid">${list.map(([l,v])=>`<div class="metric"><b>${v}</b><span>${esc(l)}</span></div>`).join("")}</div>`; }
+function vTd(){
+  if (!canEdit) return vCadreGate();
+  startTd();
+  const loading = Object.values(td.rows).some(v=>v===null) || td.main===null;
+  const head = `${cadreNav("td")}<div class="gh"><h2>TD Master Dashboard</h2><span class="sub">Cadre only</span></div>`;
+  if (td.failed) return `<section class="view">${head}<div class="empty">The dashboard could not load.</div></section>`;
+  if (loading) return `<section class="view">${head}<p class="sub">Loading…</p></section>`;
+  const M = tdMetrics();
+  const overdue = (td.rows.actions||[]).filter(r=>r.status!=="Complete" && r.due && daysFromToday(r.due) < 0);
+  const soon = (td.rows.probation||[]).flatMap(r=>[1,2,3].map(n=>({r,n,d:daysFromToday(r["p"+n+"due"]),st:r["p"+n]}))).filter(x=>x.d!==null && x.d>=0 && x.d<=45 && !isDone(x.st)).sort((a,b)=>a.d-b.d);
+  return `<section class="view">${head}
+    <div class="card"><div class="card-h"><h3>Action status</h3></div><div class="card-b">${metricGrid(M.actionStatus)}</div></div>
+    <div class="card"><div class="card-h"><h3>TCFP courses</h3></div><div class="card-b">${metricGrid(M.tcfp)}</div></div>
+    <div class="card"><div class="card-h"><h3>Training Division</h3></div><div class="card-b">${metricGrid(M.td)}
+      ${overdue.length?`<h4>Overdue actions</h4>${overdue.map(r=>`<a class="rowx" href="#" data-td-edit="actions" data-id="${esc(r.id)}" style="text-decoration:none;color:inherit"><div><b>${esc(r.item)}</b><small><span class="pill bad">Due ${fmtDate(r.due)}</span> ${esc(r.owner||"")} · ${esc(r.priority||"")}</small></div><span class="chev">›</span></a>`).join("")}`:""}
+      <p class="sub">Last dashboard review: ${td.main&&td.main.lastReview?fmtDate(td.main.lastReview):"not recorded"} <button class="btn sm" type="button" data-td-review>Mark reviewed today</button></p></div></div>
+    <div class="card"><div class="card-h"><h3>SFFMA academy</h3></div><div class="card-b">${metricGrid(M.academy)}</div></div>
+    <div class="card"><div class="card-h"><h3>Probationary / taskbooks</h3></div><div class="card-b">${metricGrid(M.probie)}
+      ${soon.length?`<h4>Phases due in the next 45 days</h4>${soon.map(x=>`<a class="rowx" href="#" data-td-edit="probation" data-id="${esc(x.r.id)}" style="text-decoration:none;color:inherit"><div><b>${esc(x.r.name)}</b><small>Phase ${x.n} due ${fmtDate(x.r["p"+x.n+"due"])} · ${x.d} days</small></div><span class="chev">›</span></a>`).join("")}`:""}
+    </div></div>
+    <div class="card"><div class="card-h"><h3>Quick review</h3></div><div class="card-b">
+      <div class="tbl"><span><b>TCFP TPA</b></span><span>Any course approaching start without approval?</span></div>
+      <div class="tbl"><span><b>TCFP records</b></span><span>Any completed course awaiting closeout or archive?</span></div>
+      <div class="tbl"><span><b>SFFMA cadets</b></span><span>Any cadet missing objectives, HazMat, required courses, skills or exams?</span></div>
+      <div class="tbl"><span><b>Open books</b></span><span>Who is stalled on permit, pump-out, aerial or other skills?</span></div>
+      <div class="tbl"><span><b>Action items</b></span><span>What must be completed this week?</span></div>
+    </div></div>
+    <h2>Sheets</h2>
+    <div class="list">${Object.entries(TD_TABLES).filter(([k])=>k!=="docs").map(([k,t])=>`<a class="row-btn" href="#td-${k}" style="--c:var(--s3)"><span class="n">${(td.rows[k]||[]).length}</span><span class="m"><b>${esc(t.title)}</b></span><span class="chev">›</span></a>`).join("")}</div>
+  </section>`;
+}
+function vTdTable(k){
+  if (!canEdit) return vCadreGate();
+  startTd();
+  const t = TD_TABLES[k]; if (!t) return `<div class="empty">No such sheet.</div>`;
+  const rows = td.rows[k];
+  const head = k==="docs" ? `${cadreNav("td-docs")}<div class="gh"><h2>Cadre Only Material</h2><span class="sub">Training Division staff only</span></div>` : `${cadreNav("td")}<a class="sub" href="#td">‹ TD Dashboard</a><div class="gh"><h2>${esc(t.title)}</h2>${rows?`<span class="sub">${rows.length}</span>`:""}</div>`;
+  if (!rows) return `<section class="view">${head}<p class="sub">Loading…</p></section>`;
+  const q = td.q.trim().toLowerCase();
+  const list = q ? rows.filter(r=>t.cols.some(([c])=>String(r[c]||"").toLowerCase().includes(q))) : rows;
+  return `<section class="view">${head}
+    <div class="search"><input type="search" id="td-q" placeholder="Search ${esc(t.title.toLowerCase())}" aria-label="Search" value="${esc(td.q)}"></div>
+    <button class="btn primary" type="button" data-td-new="${k}">${k==="docs"?"+ Add document":"+ Add row"}</button>
+    ${list.length?`<div class="list">${list.map(r=>{ const sub = t.sub(r).filter(Boolean).map(x=>esc(String(x))).join(" · "); const st = r.status||""; const cls = st==="Needs Attention"?"bad":st==="Complete"?"ok":st==="High"?"warn":""; return `<a class="row-btn" href="${k==="docs"?"#tddoc-"+esc(r.id):"#"}" ${k==="docs"?"":`data-td-edit="${k}"`} data-id="${esc(r.id)}" style="--c:var(--s3)"><span class="n">${k==="actions"&&r.priority==="High"&&r.status!=="Complete"?"!":"›"}</span><span class="m"><b>${esc(r[TD_PRIMARY[k]]||"(untitled)")}</b><small>${sub}</small></span><span class="chev">›</span></a>`; }).join("")}</div>`:`<div class="empty">${q?"Nothing matches.":"No rows yet."}</div>`}
+  </section>`;
+}
+function openTdEditor(k, rec){
+  const t = TD_TABLES[k], isNew = !rec.id;
+  const sh = $("#sheet"), inner = sh.firstElementChild;
+  inner.innerHTML = `<h2 id="sheet-title">${isNew?"Add to":"Edit"} ${esc(t.title)}</h2>
+    <form id="td-form" class="group">${t.cols.map(([c,l,type])=>{ const v = rec[c]??""; const id = "tdf-"+c;
+      if (type==="date") return `<label class="field"><span>${esc(l)}</span><input type="date" id="${id}" value="${esc(v)}"></label>`;
+      if (type==="area") return `<label class="field"><span>${esc(l)}</span><textarea id="${id}">${esc(v)}</textarea></label>`;
+      const lst = type && TD_LISTS[type]; return `<label class="field"><span>${esc(l)}</span><input type="text" id="${id}" value="${esc(v)}" ${lst?`list="tdl-${type}"`:""} ${c===TD_PRIMARY[k]?"required":""}></label>`; }).join("")}
+      ${Object.entries(TD_LISTS).map(([n,vals])=>`<datalist id="tdl-${n}">${vals.map(x=>`<option>${esc(x)}</option>`).join("")}</datalist>`).join("")}
+      <div class="actions">${isNew?"":`<button class="btn danger" type="button" id="td-del">Delete</button>`}<span style="flex:1"></span><button class="btn" type="button" id="td-cancel">Cancel</button><button class="btn primary" type="submit">Save</button></div></form>`;
+  sh.hidden = false;
+  const close = () => { sh.hidden = true; inner.innerHTML = ""; };
+  $("#td-cancel").onclick = close; sh.onclick = e => { if (e.target===sh) close(); };
+  const del = $("#td-del");
+  if (del) del.onclick = async () => { if (del.dataset.armed!=="1") { del.dataset.armed="1"; del.textContent="Tap again to delete"; return; } try { await db.collection("td").doc("main").collection(k).doc(rec.id).delete(); toast("Deleted"); close(); } catch(e) { toast("Could not delete."); } };
+  $("#td-form").onsubmit = async e => {
+    e.preventDefault();
+    const data = {}; for (const [c] of t.cols) data[c] = $("#tdf-"+c).value.trim();
+    data.updatedAt = today();
+    try {
+      const col = db.collection("td").doc("main").collection(k);
+      if (isNew) { const rows = td.rows[k]||[]; data.order = rows.length ? Math.max(...rows.map(r=>r.order??0))+1 : 0; await col.add(data); }
+      else await col.doc(rec.id).update(data);
+      toast("Saved"); close();
+    } catch(err) { toast("Could not save. Only Training Division staff can edit the dashboard."); }
+  };
+}
+
+function vTdDoc(id){
+  if (!canEdit) return vCadreGate();
+  startTd();
+  const rows = td.rows.docs; const r = rows && rows.find(x=>x.id===id);
+  const head = `<a class="sub" href="#td-docs">‹ Cadre Material</a>`;
+  if (!rows) return `<section class="view">${head}<p class="sub">Loading…</p></section>`;
+  if (!r) return `<section class="view">${head}<div class="empty">That document was removed.</div></section>`;
+  return `<section class="view">${head}<div class="doc-h"><span class="num">Cadre only</span><h1>${esc(r.title)}</h1>${r.updatedAt?`<span class="meta">Updated ${fmtDate(r.updatedAt)}</span>`:""}</div>
+    <div class="doc body">${renderBody(r.body||"", "tddoc-"+r.id, false)}</div>
+    <div class="actions" style="justify-content:flex-start"><button class="btn sm" type="button" data-td-edit="docs" data-id="${esc(r.id)}">Edit</button></div></section>`;
+}
+// ---------- views ----------
+function vHomeTd(){ return `<section class="view">${vHomeTdGroups()}</section>`; }
+function vHomeTdGroups(){
+  const cats = store.sections.filter(s=>s.area==="training");
+  return `
+    <div class="group"><h2>My Training</h2>
+      <div class="tiles">
+        <a class="tile" href="#me" style="--c:var(--s2)"><b>My Training Record</b><span>Certifications, ISO hours, phase book progress</span></a>
+        ${APP?"":`<a class="tile" href="${GUIDE_APP}" target="_blank" rel="noopener" style="--c:var(--s3)"><b>CVFD Field Guide ↗</b><span>SOGs, pump chart, size-up, department tools</span></a>`}
+      </div>
+    </div>
+    ${canEdit?`<div class="group"><h2>Cadre (staff only)</h2><div class="tiles">
+        ${APP?`<a class="tile" href="#cadre" style="--c:var(--s5)"><b>Weekly Check-In</b><span>This week's events, testing, tasks</span></a>`:`<a class="tile" href="${CK_APP}" target="_blank" rel="noopener" style="--c:var(--s5)"><b>Weekly Check-In ↗</b><span>Its own app now: events, testing, tasks</span></a>`}
+        <a class="tile" href="#td" style="--c:var(--s5)"><b>TD Master Dashboard</b><span>Courses, actions, probation, taskbooks</span></a>
+        <a class="tile" href="#td-docs" style="--c:var(--s5)"><b>Cadre Material</b><span>Staff-only documents</span></a>
+        <a class="tile" href="#roster" style="--c:var(--s5)"><b>Member Roster${(startRoster(), roster&&roster.ready&&roster.list.filter(needsReview).length)?` <span class="pill bad">${roster.list.filter(needsReview).length} new</span>`:""}</b><span>Live member records: profiles, certs, hours, books</span></a>
+      </div></div>`:""}
+    <div class="group"><div class="gh"><h2>Fire Training Division</h2><a class="sub" href="#training">All</a></div>
+      ${storeNotice() || (cats.length ? `<div class="tiles">${cats.map(c=>`<a class="tile" href="#cat-${esc(c.id)}" style="--c:var(--s4)"><b>${esc(c.title)}</b><span>${esc(c.blurb||"")}</span></a>`).join("")}</div>` : `<div class="empty">No training categories yet.${canEdit?" Turn on Edit to add the first one.":""}</div>`)}
+    </div>
+    <div class="group"><div class="gh"><h2>CVFD Fire Academy</h2><a class="sub" href="#academy">All</a></div>
+      ${storeNotice() || vClassTiles()}
+    </div>`;
+}
+function vMoved(){
+  return `<section class="view"><div class="empty">That page isn't part of the Field Guide.<br><br><a class="btn primary" href="#home">Back to Home</a></div></section>`;
+}
+function vHome(){
+  if (MODE==="td") return vHomeTd();
+  const cats = store.sections.filter(s=>s.area==="training");
+  const n = SOGS ? SOGS.length : "";
+  return `<section class="view">
+    <div class="search"><input type="search" id="home-q" placeholder="Search SOGs: mayday, 303.04, RIT…" aria-label="Search SOGs" value="${esc(sogQuery)}"></div>
+    <div class="group"><h2>Fire Suppression</h2>
+      <div class="tiles">
+        <a class="tile" href="#sogs" style="--c:var(--s3)"><b>SOGs</b><span>${n} policies and guidelines, searchable</span></a>
+        <a class="tile" href="${PUMP_CHART}" style="--c:var(--s2)"><b>Pump Chart</b><span>Crosslays, PDP builder, friction loss, hydrants</span></a>
+        <a class="tile" href="#sizeup" style="--c:var(--s5)"><b>First-In Size-Up</b><span>Radio report, 360, strategy prompts</span></a>
+        <a class="tile" href="#drills" style="--c:var(--s4)"><b>5-Minute Drills</b><span>100 quick station-level drills, by topic</span></a>
+        ${store.sections.filter(s=>s.area==="suppression").map(c=>`<a class="tile" href="#cat-${esc(c.id)}" style="--c:var(--s1)"><b>${esc(c.title)}</b><span>${esc(c.blurb||"")}</span></a>`).join("")}
+      </div>
+      ${editing?`<button class="btn" type="button" data-act="new-supp">+ Add Fire Suppression category</button>`:""}
+    </div>
+    ${APP ? vHomeTdGroups() : ""}
+    <div class="group"><div class="gh"><h2>Department Tools</h2><a class="sub" href="#tools">All</a></div>
+      ${storeNotice() || vToolTiles()}
+    </div>
+  </section>`;
+}
+function vToolTiles(){
+  if (!store.tools.length) return `<div class="empty">No tools linked yet.${canEdit?" Turn on Edit to add one.":""}</div>`;
+  return `<div class="tiles">${store.tools.map(t=>`<a class="tile" href="${esc(t.url)}" target="_blank" rel="noopener" style="--c:var(--plate)"><b>${esc(t.name)} ↗</b><span>${esc(t.note||"")}</span></a>`).join("")}</div>`;
+}
+function sogMatches(){
+  const q = sogQuery.trim().toLowerCase();
+  let list = SOGS.filter(s => sogFilter==="all" || s.series===sogFilter);
+  if (!q) return list.map(s=>({s}));
+  const num = q.match(/^(\d{3})(?:\.(\d{1,2}))?$/);
+  if (num) return list.filter(s=>s.s.startsWith(num[1].slice(0,3))).map(s=>({s}));
+  const words = q.split(/\s+/).filter(Boolean);
+  const res = [];
+  for (const s of list) {
+    if (!words.every(w=>s.hay.includes(w))) continue;
+    const inTitle = words.every(w=>s.t.toLowerCase().includes(w));
+    const hit = s.b.find(b=>b.x.toLowerCase().includes(words[0]));
+    let snip = "";
+    if (hit) { const i = hit.x.toLowerCase().indexOf(words[0]); snip = (i>60?"…":"")+hit.x.slice(Math.max(0,i-60), i+110)+"…"; }
+    res.push({s, inTitle, hit, snip});
+  }
+  return res.sort((a,b)=>(b.inTitle-a.inTitle) || a.s.s.localeCompare(b.s.s));
+}
+function hl(text){
+  const words = sogQuery.trim().toLowerCase().split(/\s+/).filter(w=>w.length>1 && !/^\d/.test(w));
+  let h = esc(text);
+  for (const w of words) h = h.replace(new RegExp("("+w.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+")","ig"),"<mark>$1</mark>");
+  return h;
+}
+function vSogList(){
+  if (sogErr) return `<div class="empty">The SOG library could not load. Check your connection and reopen the guide.</div>`;
+  if (!SOGS) return `<p class="sub">Loading SOGs…</p>`;
+  const rows = sogMatches();
+  const chips = [["all","All","var(--ink)"], ...Object.entries(SERIES).map(([k,[n,c]])=>[k,`${k}00 ${n}`,c])];
+  let lastSeries = null;
+  const body = rows.length ? rows.map(({s,hit,snip}) => {
+    const [, c] = seriesOf(s.s);
+    const sub = snip ? `${hit.sec?esc(hit.sec)+" · ":""}${hl(snip)}` : `Revised ${esc(s.r)}`;
+    return `<a class="row-btn" href="#sog-${s.s}${hit&&hit.sec?"-"+hit.sec.split(".")[1]:""}" style="--c:${c}" data-hl="1"><span class="n">${s.s}</span><span class="m"><b>${hl(s.t)}</b><small>${sub}</small></span><span class="chev">›</span></a>`;
+  }).join("") : `<div class="row-btn" style="cursor:default"><span></span><span class="m"><b>No SOGs match “${esc(sogQuery)}”</b><small>Try fewer words, or a section number like 308.</small></span><span></span></div>`;
+  return `<section class="view">
+    <div class="gh"><h2>Standard Operating Guidelines</h2><span class="sub">${rows.length} of ${SOGS.length}</span></div>
+    <div class="search"><input type="search" id="sog-q" placeholder="Search titles and full text" aria-label="Search SOGs" value="${esc(sogQuery)}"></div>
+    <div class="chips" role="group" aria-label="Series">${chips.map(([k,l,c])=>`<button class="chip" type="button" data-series="${k}" aria-pressed="${sogFilter===k}" style="--c:${c}">${k!=="all"?"<i></i>":""}${esc(l)}</button>`).join("")}</div>
+    <div class="list" id="sog-rows">${body}</div>
+  </section>`;
+}
+function vSog(num, sub){
+  if (!SOGS) return sogErr ? vSogList() : `<p class="sub">Loading SOGs…</p>`;
+  const s = SOGS.find(x=>x.s===num);
+  if (!s) return `<div class="empty">There is no SOG ${esc(num)} in the library. <a class="btn sm" href="#sogs">All SOGs</a></div>`;
+  const [series, c] = seriesOf(s.s);
+  const heads = s.b.filter(b=>b.t==="h");
+  const blocks = s.b.map(b => {
+    const x = lastHighlight ? hl(b.x) : esc(b.x);
+    if (b.t==="h") return `<h3 id="s-${b.id.replace(".","-")}"><span class="k">${esc(b.id)}</span>${esc(b.x.toLowerCase().replace(/\b\w/g,m=>m.toUpperCase()))}</h3>`;
+    if (b.t==="h2") return `<div class="lab">${x}</div>`;
+    if (b.t==="li") return `<div class="li l${b.l||0}"><span class="mk">${esc(b.m)}</span><span>${x}</span></div>`;
+    if (/\S\s{3,}\S/.test(b.x)) { const parts = b.x.split(/\s{3,}/); return `<div class="tbl"><span>${esc(parts[0])}</span><span>${esc(parts.slice(1).join(" "))}</span></div>`; }
+    return `<p>${x}</p>`;
+  }).join("");
+  const idx = SOGS.indexOf(s), prev = SOGS[idx-1], next = SOGS[idx+1];
+  return `<section class="view" style="--c:${c}">
+    <a class="sub" href="#sogs">‹ All SOGs</a>
+    <div class="doc-h"><span class="num">SOG ${s.s} · ${esc(series)}</span><h1>${esc(s.t)}</h1><span class="meta">Revised ${esc(s.r)}</span></div>
+    ${heads.length>1?`<div class="toc" aria-label="Jump to section">${heads.map(h=>`<button class="chip" type="button" data-jump="s-${h.id.replace(".","-")}">${esc(h.id)}</button>`).join("")}</div>`:""}
+    <article class="doc">${blocks}</article>
+    <div class="actions" style="justify-content:space-between">${prev?`<a class="btn sm" href="#sog-${prev.s}">‹ ${prev.s}</a>`:"<span></span>"}${next?`<a class="btn sm" href="#sog-${next.s}">${next.s} ›</a>`:""}</div>
+  </section>`;
+}
+const STATIC_ITEMS = [{"id": "ref-rank-roadmap", "chart": "rank", "section": "s-ref", "tag": "", "title": "Roadmap to Promote", "order": -1, "body": "Every rank, what it takes to move up, and how the paid and volunteer paths differ. From the CVFD Suppression job-responsibility sheets and the published Command Staff.\n**Probationary Firefighter (6 months) \u2192 Firefighter \u2192 Engine Operator \u2192 Lieutenant \u2192 Captain \u2192 Battalion Chief \u2192 Deputy / Assistant Chief \u2192 Fire Chief**\n# The rank ladder\n- **Probationary Firefighter:** 6 months. Learn the job under supervision and finish skills sign-offs.\n- **Firefighter:** Respond to emergencies, maintain equipment and apparatus, provide EMS.\n- **Engine Operator:** Drive and pump the apparatus, lead daily ops, fill in for the Lieutenant.\n- **Lieutenant:** Direct shift operations, train personnel, fill in for the Captain.\n- **Captain:** Station command, policy development, personnel management.\n- **Battalion Chief:** Multi-station oversight, recruiting, budget support, equipment.\n- **Deputy Chief:** Logistics, Special Operations, Volunteers.\n- **Assistant Chief:** Operations, Administration or EMS. Planning and policy.\n- **Fire Chief:** Leads the department, strategy, budget and outside relations.\n# Volunteer entry\n- **Certified Volunteer:** Holds a fire certification from a certified SFFMA or TCFP academy.\n- **Cadet:** Applies, passes the PAT, then attends the in-house SFFMA academy.\nAfter successful completion, both become Probationary Firefighters for 6 months, then promote to Firefighter, Engine Operator, Lieutenant, Captain and up.\n# Volunteer path\n- **Station and probation:** Get assigned a station; 6 months as a Probationary Firefighter.\n- **Engine Operator:** The Station Captain submits a letter of recommendation when the member is ready for E/O.\n- **Officer development:** After E/O, the Station Captain sends a letter of recommendation to the Training Division when the member is ready to start officer development toward Lieutenant, Captain or higher.\n# Paid duty crew path\n- **Apply:** Duty Crew, part time or full time. Pass the PAT and interview.\n- **NEOP:** Complete the New Employee Orientation Program.\n- **Station and probation:** Get assigned a station; 6-month probation.\n- **Engine Operator:** After probation, the BC submits a letter of recommendation when the member is ready for E/O.\n- **Officer development:** After E/O, the BC sends a letter of recommendation to the Training Division when the member is ready to start officer development toward Lieutenant, Captain or higher.\n# Good to know\n- CVFD is a combination department: paid and volunteer members staff stations 24 hours a day.\n- Talk with your Station Captain and the Training Division to build a training plan that maps out your goals for growing with the department.\n- Higher ranks often require Fire Officer I and/or II.", "sog": "Fire Service Rank Progression (CVFD Suppression job descriptions)"}];
+const STATIC_IDS = new Set(STATIC_ITEMS.map(i=>i.id));
+function itemsOf(secId){ return store.items.filter(i=>i.section===secId); }
+const PRACTICE = [{"id": "photo-house-1", "kind": "house", "title": "Front room fire into the attic", "info": "Dispatched 3:05 pm: house on fire, neighbor calling. 1712 Willow Bend.", "img": "practice/house-window.jpg", "irr": "Westcom, Engine 1 on location of a medium one-story single-family residence with fire showing from a front window, side Alpha, extending into the eave and attic. Engine 1 is going offensive, pulling a 1-3/4\" line through the front door. Captain Engine 1 will be Willow Bend Command in fast-attack mode. Continue all units. Engine 2, establish water supply and check the Delta exposure.", "notes": ["Fire is already in the eave, so the attic is next. Plan to pull ceilings right behind your knockdown.", "The house on the Delta side is close. Check it, and protect it if the fire vents that way.", "The front door is right next to the fire room, so your line can get to it fast. Confirm whether anyone is still inside."], "ask": "Fire is in the eave already. What is your second priority after knocking down the room?"},{"id": "photo-strip-1", "kind": "commercial", "title": "Strip mall, end unit", "info": "Dispatched 2:10 pm: smoke and fire from a vacant store. 4800 Hwy 6 shopping center.", "img": "practice/strip-end.jpg", "irr": "Westcom, Engine 1 on location of a medium one-story commercial strip mall with fire showing from the end unit on the Bravo side, smoke from the roofline. Engine 1 is going offensive, pulling a 2-1/2\" line through the front of the fire unit. Captain Engine 1 will be Highway 6 Command in fast-attack mode. Request a second alarm. Truck 1, check the exposure units on the Delta side and the cockloft.", "notes": ["Smoke from the roofline means the fire is in the cockloft. In a strip mall that space often runs over the units next door.", "The windows have already failed, so the fire has plenty of air. Get water on it fast with a big line.", "The units on the Delta side are your exposures. Get into them, check the ceilings, and use the rear doors on side Charlie for access."], "ask": "The windows are gone and smoke is at the roofline. Where is the fire heading?"},{"id": "photo-apt-1", "kind": "apt", "title": "Balcony fire, three-story apartments", "info": "Dispatched 11:30 am: fire on a balcony, Bldg 4. 2400 Briarwood Dr.", "img": "practice/apt-balcony.jpg", "irr": "Westcom, Engine 1 on location of a large three-story multi-family apartment building with fire showing from a second-floor balcony, extending to the third floor, side Alpha. Engine 1 is going offensive, pulling a 1-3/4\" line up the stairwell to the second floor. Captain Engine 1 will be Briarwood Drive Command in fast-attack mode. Request a second alarm. Engine 2, establish water supply.", "notes": ["The fire is already climbing the outside of the building. Expect it in the third-floor unit and the attic at the eaves, and check both early.", "The open stairwell on the left is the way out for the upper units. Keep it protected while you search.", "A quick hit on the balcony fire from outside can slow the vertical spread while your interior line goes up."], "ask": "The fire is running up the outside. Where will it go next, and who needs to get out first?"},{"id": "house-1", "kind": "house", "title": "Smoke from the eaves", "info": "Dispatched 1:40 pm: smell of smoke, caller outside. 1418 Pecan St.", "svg": "<svg viewBox=\"0 0 400 260\" xmlns=\"http://www.w3.org/2000/svg\" role=\"img\"><defs><linearGradient id=\"h1sk\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0\" stop-color=\"#9cc7e4\"/><stop offset=\"1\" stop-color=\"#dcebf5\"/><\/linearGradient>\n<filter id=\"h1bl\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"5\"/><\/filter>\n<filter id=\"h1bl2\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"2.2\"/><\/filter>\n<radialGradient id=\"h1gl\"><stop offset=\"0\" stop-color=\"#ffd25a\" stop-opacity=\".9\"/><stop offset=\"1\" stop-color=\"#ff6a00\" stop-opacity=\"0\"/><\/radialGradient><\/defs><rect width=\"400\" height=\"260\" fill=\"url(#h1sk)\"/><rect y=\"212\" width=\"400\" height=\"48\" fill=\"#7fa36a\"/><rect y=\"234\" width=\"400\" height=\"26\" fill=\"#55595e\"/><rect x=\"8\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"48\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"88\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"128\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"168\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"208\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"248\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"288\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"328\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"368\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"37.6\" y=\"190.4\" width=\"4.8\" height=\"21.599999999999998\" fill=\"#5a3d25\" stroke=\"none\" stroke-width=\"0\" /><circle cx=\"40\" cy=\"180.8\" r=\"15.6\" fill=\"#3f6e34\"/><rect x=\"358\" y=\"194\" width=\"4\" height=\"18\" fill=\"#5a3d25\" stroke=\"none\" stroke-width=\"0\" /><circle cx=\"360\" cy=\"186\" r=\"13\" fill=\"#3f6e34\"/><rect x=\"90\" y=\"150\" width=\"220\" height=\"62\" fill=\"#d9c7a3\" stroke=\"#222\" stroke-width=\"1.2\" /><g filter=\"url(#h1bl)\"><circle cx=\"199.4\" cy=\"133.5\" r=\"8.1\" fill=\"#9a9a9a\" opacity=\"0.60\"/><circle cx=\"204.5\" cy=\"125.7\" r=\"8.4\" fill=\"#9a9a9a\" opacity=\"0.57\"/><circle cx=\"206.1\" cy=\"117.4\" r=\"10.2\" fill=\"#9a9a9a\" opacity=\"0.53\"/><circle cx=\"218.4\" cy=\"112.5\" r=\"10.6\" fill=\"#9a9a9a\" opacity=\"0.50\"/><circle cx=\"214.9\" cy=\"98.5\" r=\"13.8\" fill=\"#9a9a9a\" opacity=\"0.47\"/><circle cx=\"219.3\" cy=\"88.9\" r=\"16.5\" fill=\"#9a9a9a\" opacity=\"0.43\"/><circle cx=\"231.5\" cy=\"83.6\" r=\"14.9\" fill=\"#9a9a9a\" opacity=\"0.40\"/><circle cx=\"228.8\" cy=\"76.0\" r=\"16.2\" fill=\"#9a9a9a\" opacity=\"0.37\"/><circle cx=\"235.9\" cy=\"70.1\" r=\"17.7\" fill=\"#9a9a9a\" opacity=\"0.34\"/><circle cx=\"244.1\" cy=\"60.2\" r=\"22.6\" fill=\"#9a9a9a\" opacity=\"0.30\"/><\/g><g filter=\"url(#h1bl)\"><circle cx=\"130.2\" cy=\"134.9\" r=\"5.2\" fill=\"#a3a3a3\" opacity=\"0.50\"/><circle cx=\"136.1\" cy=\"127.8\" r=\"6.0\" fill=\"#a3a3a3\" opacity=\"0.46\"/><circle cx=\"144.2\" cy=\"114.9\" r=\"10.0\" fill=\"#a3a3a3\" opacity=\"0.42\"/><circle cx=\"144.8\" cy=\"111.8\" r=\"9.3\" fill=\"#a3a3a3\" opacity=\"0.38\"/><circle cx=\"143.9\" cy=\"105.2\" r=\"13.1\" fill=\"#a3a3a3\" opacity=\"0.34\"/><circle cx=\"149.4\" cy=\"90.4\" r=\"13.3\" fill=\"#a3a3a3\" opacity=\"0.30\"/><circle cx=\"160.2\" cy=\"81.8\" r=\"13.5\" fill=\"#a3a3a3\" opacity=\"0.26\"/><\/g><g filter=\"url(#h1bl)\"><circle cx=\"266.5\" cy=\"132.7\" r=\"5.1\" fill=\"#a3a3a3\" opacity=\"0.50\"/><circle cx=\"281.9\" cy=\"128.2\" r=\"5.2\" fill=\"#a3a3a3\" opacity=\"0.46\"/><circle cx=\"283.9\" cy=\"116.6\" r=\"7.7\" fill=\"#a3a3a3\" opacity=\"0.42\"/><circle cx=\"283.6\" cy=\"111.6\" r=\"12.2\" fill=\"#a3a3a3\" opacity=\"0.38\"/><circle cx=\"297.8\" cy=\"104.8\" r=\"11.0\" fill=\"#a3a3a3\" opacity=\"0.34\"/><circle cx=\"296.1\" cy=\"96.7\" r=\"15.0\" fill=\"#a3a3a3\" opacity=\"0.30\"/><circle cx=\"303.2\" cy=\"84.1\" r=\"15.3\" fill=\"#a3a3a3\" opacity=\"0.26\"/><\/g><polygon points=\"80,150 120,118 280,118 320,150\" fill=\"#5b4a3f\" stroke=\"#222\" stroke-width=\"1.2\"/><rect x=\"110\" y=\"165\" width=\"34\" height=\"26\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"127.0\" y1=\"165\" x2=\"127.0\" y2=\"191\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"250\" y=\"165\" width=\"34\" height=\"26\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"267.0\" y1=\"165\" x2=\"267.0\" y2=\"191\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"186\" y=\"170\" width=\"26\" height=\"42\" fill=\"#6b4a2f\" stroke=\"#222\" stroke-width=\"1.2\" /><circle cx=\"208\" cy=\"191.0\" r=\"1.2\" fill=\"#ddd\"/><rect x=\"150\" y=\"212\" width=\"100\" height=\"3\" fill=\"#bbb\" stroke=\"none\" stroke-width=\"0\" /><\/svg>", "irr": "Westcom, Engine 1 on location of a small one-story single-family residence with light smoke showing from the eaves. Engine 1 is going offensive, investigating with a line. Captain Engine 1 will be Pecan Street Command in investigative mode. Continue all units.", "notes": ["Light smoke from the eaves with clear windows points to the attic. Bring a hook and check the ceiling early.", "Caller is outside: confirm everyone is out before you commit to a search.", "Small one-story ranch: one line, 1-3/4\", is usually enough."], "ask": "Light smoke only. Where do you think the fire is?"}, {"id": "house-2", "kind": "house", "title": "Fire showing, second floor", "info": "Dispatched 2:15 am: house fire, unknown if occupied. 907 Main St.", "svg": "<svg viewBox=\"0 0 400 260\" xmlns=\"http://www.w3.org/2000/svg\" role=\"img\"><defs><linearGradient id=\"h2sk\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0\" stop-color=\"#1b2433\"/><stop offset=\"1\" stop-color=\"#3a4660\"/><\/linearGradient>\n<filter id=\"h2bl\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"5\"/><\/filter>\n<filter id=\"h2bl2\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"2.2\"/><\/filter>\n<radialGradient id=\"h2gl\"><stop offset=\"0\" stop-color=\"#ffd25a\" stop-opacity=\".9\"/><stop offset=\"1\" stop-color=\"#ff6a00\" stop-opacity=\"0\"/><\/radialGradient><\/defs><rect width=\"400\" height=\"260\" fill=\"url(#h2sk)\"/><circle cx=\"123\" cy=\"19\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"141\" cy=\"13\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"345\" cy=\"77\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"85\" cy=\"27\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"335\" cy=\"45\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"34\" cy=\"8\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"260\" cy=\"25\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"314\" cy=\"40\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"26\" cy=\"67\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"363\" cy=\"8\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"146\" cy=\"5\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"115\" cy=\"85\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"236\" cy=\"89\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"124\" cy=\"61\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"278\" cy=\"60\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"76\" cy=\"50\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"180\" cy=\"38\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><circle cx=\"357\" cy=\"6\" r=\"0.9\" fill=\"#fff\" opacity=\".6\"/><rect y=\"212\" width=\"400\" height=\"48\" fill=\"#3d4a3a\"/><rect y=\"234\" width=\"400\" height=\"26\" fill=\"#2a2d31\"/><rect x=\"8\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"48\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"88\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"128\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"168\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"208\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"248\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"288\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"328\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"368\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"52.4\" y=\"188.6\" width=\"5.2\" height=\"23.400000000000002\" fill=\"#5a3d25\" stroke=\"none\" stroke-width=\"0\" /><circle cx=\"55\" cy=\"178.2\" r=\"16.900000000000002\" fill=\"#23361f\"/><rect x=\"110\" y=\"110\" width=\"180\" height=\"102\" fill=\"#c9b8a0\" stroke=\"#222\" stroke-width=\"1.2\" /><polygon points=\"100,110 200.0,70 300,110\" fill=\"#3f3530\" stroke=\"#222\" stroke-width=\"1.2\"/><rect x=\"128\" y=\"124\" width=\"30\" height=\"26\" fill=\"#2c3a4a\" stroke=\"#9a958c\" stroke-width=\"2\" /><line x1=\"143.0\" y1=\"124\" x2=\"143.0\" y2=\"150\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"185\" y=\"124\" width=\"30\" height=\"26\" fill=\"#ff8a1c\" stroke=\"#9a958c\" stroke-width=\"2\" /><ellipse cx=\"200.0\" cy=\"137.0\" rx=\"42.0\" ry=\"31.2\" fill=\"url(#h2gl)\"/><path d=\"M186.5,127.0 Q187.1,127.0 187.8,106.6 Q189.8,106.6 191.9,115.3 Q192.6,115.3 193.3,105.3 Q195.3,105.3 197.3,117.6 Q198.3,117.6 199.4,95.1 Q201.0,95.1 202.7,120.4 Q205.0,120.4 207.2,102.7 Q207.7,102.7 208.1,118.0 Q210.3,118.0 212.5,97.8 Q213.0,97.8 213.5,127.0 Z\" fill=\"#ff5a00\" opacity=\".95\"/><path d=\"M190.3,127.0 Q191.7,127.0 193.1,111.5 Q193.6,111.5 194.2,118.8 Q195.3,118.8 196.5,108.9 Q197.3,108.9 198.1,122.3 Q199.7,122.3 201.4,106.1 Q201.7,106.1 201.9,118.5 Q203.5,118.5 205.0,102.3 Q205.4,102.3 205.8,120.4 Q207.2,120.4 208.6,105.8 Q209.1,105.8 209.7,127.0 Z\" fill=\"#ff9a1a\" opacity=\".95\"/><path d=\"M194.1,127.0 Q195.6,127.0 197.1,114.9 Q196.8,114.9 196.4,121.9 Q197.9,121.9 199.4,112.6 Q199.1,112.6 198.8,124.0 Q200.1,124.0 201.3,112.5 Q201.2,112.5 201.2,123.9 Q200.9,123.9 200.6,113.4 Q202.1,113.4 203.6,124.4 Q205.0,124.4 206.5,113.6 Q206.2,113.6 205.9,127.0 Z\" fill=\"#ffd84a\" opacity=\".95\"/><g filter=\"url(#h2bl)\"><circle cx=\"198.9\" cy=\"116.7\" r=\"10.1\" fill=\"#2a2a2a\" opacity=\"0.85\"/><circle cx=\"205.7\" cy=\"105.7\" r=\"11.4\" fill=\"#2a2a2a\" opacity=\"0.80\"/><circle cx=\"213.6\" cy=\"90.6\" r=\"13.9\" fill=\"#2a2a2a\" opacity=\"0.75\"/><circle cx=\"223.2\" cy=\"76.6\" r=\"16.5\" fill=\"#2a2a2a\" opacity=\"0.69\"/><circle cx=\"227.1\" cy=\"60.7\" r=\"18.5\" fill=\"#2a2a2a\" opacity=\"0.64\"/><circle cx=\"239.2\" cy=\"52.1\" r=\"23.5\" fill=\"#2a2a2a\" opacity=\"0.59\"/><circle cx=\"253.4\" cy=\"37.9\" r=\"24.0\" fill=\"#2a2a2a\" opacity=\"0.54\"/><circle cx=\"251.2\" cy=\"21.5\" r=\"25.8\" fill=\"#2a2a2a\" opacity=\"0.49\"/><circle cx=\"264.6\" cy=\"12.5\" r=\"29.0\" fill=\"#2a2a2a\" opacity=\"0.43\"/><\/g><rect x=\"242\" y=\"124\" width=\"30\" height=\"26\" fill=\"#3b3b3b\" stroke=\"#9a958c\" stroke-width=\"2\" /><g filter=\"url(#h2bl)\"><circle cx=\"255.3\" cy=\"120.5\" r=\"4.9\" fill=\"#555\" opacity=\"0.85\"/><circle cx=\"263.4\" cy=\"105.6\" r=\"9.4\" fill=\"#555\" opacity=\"0.80\"/><circle cx=\"265.4\" cy=\"96.5\" r=\"9.0\" fill=\"#555\" opacity=\"0.75\"/><circle cx=\"273.9\" cy=\"85.4\" r=\"14.5\" fill=\"#555\" opacity=\"0.69\"/><circle cx=\"280.5\" cy=\"75.2\" r=\"14.8\" fill=\"#555\" opacity=\"0.64\"/><circle cx=\"287.3\" cy=\"67.3\" r=\"18.8\" fill=\"#555\" opacity=\"0.59\"/><circle cx=\"295.9\" cy=\"58.2\" r=\"19.7\" fill=\"#555\" opacity=\"0.54\"/><circle cx=\"300.7\" cy=\"49.2\" r=\"21.9\" fill=\"#555\" opacity=\"0.49\"/><circle cx=\"308.8\" cy=\"37.1\" r=\"24.6\" fill=\"#555\" opacity=\"0.43\"/><\/g><rect x=\"128\" y=\"170\" width=\"30\" height=\"26\" fill=\"#f3d98a\" stroke=\"#9a958c\" stroke-width=\"2\" /><rect x=\"242\" y=\"170\" width=\"30\" height=\"26\" fill=\"#2c3a4a\" stroke=\"#9a958c\" stroke-width=\"2\" /><line x1=\"257.0\" y1=\"170\" x2=\"257.0\" y2=\"196\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"188\" y=\"170\" width=\"24\" height=\"42\" fill=\"#6b4a2f\" stroke=\"#222\" stroke-width=\"1.2\" /><circle cx=\"208\" cy=\"191.0\" r=\"1.2\" fill=\"#ddd\"/><rect x=\"300\" y=\"202\" width=\"40\" height=\"10\" fill=\"#2f5d8a\" stroke=\"#222\" stroke-width=\"1\" rx=\"3\"/><rect x=\"308\" y=\"195\" width=\"22\" height=\"8\" fill=\"#2f5d8a\" stroke=\"#222\" stroke-width=\"1\" rx=\"3\"/><circle cx=\"309\" cy=\"212\" r=\"4\" fill=\"#111\"/><circle cx=\"331\" cy=\"212\" r=\"4\" fill=\"#111\"/><g filter=\"url(#h2bl)\"><circle cx=\"201.6\" cy=\"92.3\" r=\"8.7\" fill=\"#202020\" opacity=\"0.90\"/><circle cx=\"212.1\" cy=\"77.9\" r=\"11.8\" fill=\"#202020\" opacity=\"0.85\"/><circle cx=\"214.1\" cy=\"60.0\" r=\"14.9\" fill=\"#202020\" opacity=\"0.81\"/><circle cx=\"224.9\" cy=\"52.4\" r=\"17.2\" fill=\"#202020\" opacity=\"0.77\"/><circle cx=\"243.7\" cy=\"39.0\" r=\"20.0\" fill=\"#202020\" opacity=\"0.72\"/><circle cx=\"244.3\" cy=\"23.1\" r=\"22.5\" fill=\"#202020\" opacity=\"0.68\"/><circle cx=\"257.0\" cy=\"7.3\" r=\"28.1\" fill=\"#202020\" opacity=\"0.63\"/><circle cx=\"272.7\" cy=\"-0.8\" r=\"28.6\" fill=\"#202020\" opacity=\"0.58\"/><circle cx=\"282.7\" cy=\"-14.4\" r=\"30.6\" fill=\"#202020\" opacity=\"0.54\"/><circle cx=\"288.2\" cy=\"-30.8\" r=\"35.5\" fill=\"#202020\" opacity=\"0.49\"/><circle cx=\"300.8\" cy=\"-45.1\" r=\"36.3\" fill=\"#202020\" opacity=\"0.45\"/><\/g><\/svg>", "irr": "Westcom, Engine 1 on location of a medium two-story single-family residence with fire showing from the second floor, side Alpha. Engine 1 is going offensive, pulling a 1-3/4\" line to the second floor. Captain Engine 1 will be Main Street Command in fast-attack mode. Continue all units. Engine 2, establish water supply.", "notes": ["2 am with a car in the driveway: assume people are inside, likely in the bedrooms upstairs.", "Fire in one room with smoke in the next: get water between the fire and the bedrooms.", "Next-in companies: water supply and primary search on the second floor."], "ask": "Night call, car in the driveway. What does that tell you about occupants?"}, {"id": "house-3", "kind": "house", "title": "Attached garage", "info": "Dispatched 4:50 pm: garage on fire, family is out. 2210 Cedar Ln.", "svg": "<svg viewBox=\"0 0 400 260\" xmlns=\"http://www.w3.org/2000/svg\" role=\"img\"><defs><linearGradient id=\"h3sk\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0\" stop-color=\"#9cc7e4\"/><stop offset=\"1\" stop-color=\"#dcebf5\"/><\/linearGradient>\n<filter id=\"h3bl\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"5\"/><\/filter>\n<filter id=\"h3bl2\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"2.2\"/><\/filter>\n<radialGradient id=\"h3gl\"><stop offset=\"0\" stop-color=\"#ffd25a\" stop-opacity=\".9\"/><stop offset=\"1\" stop-color=\"#ff6a00\" stop-opacity=\"0\"/><\/radialGradient><\/defs><rect width=\"400\" height=\"260\" fill=\"url(#h3sk)\"/><rect y=\"212\" width=\"400\" height=\"48\" fill=\"#7fa36a\"/><rect y=\"234\" width=\"400\" height=\"26\" fill=\"#55595e\"/><rect x=\"8\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"48\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"88\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"128\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"168\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"208\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"248\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"288\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"328\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"368\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"28\" y=\"194\" width=\"4\" height=\"18\" fill=\"#5a3d25\" stroke=\"none\" stroke-width=\"0\" /><circle cx=\"30\" cy=\"186\" r=\"13\" fill=\"#3f6e34\"/><rect x=\"80\" y=\"150\" width=\"170\" height=\"62\" fill=\"#e1d5bd\" stroke=\"#222\" stroke-width=\"1.2\" /><polygon points=\"72,150 105,120 225,120 258,150\" fill=\"#6a5a4a\" stroke=\"#222\" stroke-width=\"1.2\"/><rect x=\"98\" y=\"165\" width=\"32\" height=\"26\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"114.0\" y1=\"165\" x2=\"114.0\" y2=\"191\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"150\" y=\"165\" width=\"32\" height=\"26\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"166.0\" y1=\"165\" x2=\"166.0\" y2=\"191\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"200\" y=\"170\" width=\"24\" height=\"42\" fill=\"#6b4a2f\" stroke=\"#222\" stroke-width=\"1.2\" /><circle cx=\"220\" cy=\"191.0\" r=\"1.2\" fill=\"#ddd\"/><rect x=\"250\" y=\"140\" width=\"100\" height=\"72\" fill=\"#e1d5bd\" stroke=\"#222\" stroke-width=\"1.2\" /><polygon points=\"244,140 300,108 356,140\" fill=\"#6a5a4a\" stroke=\"#222\" stroke-width=\"1.2\"/><rect x=\"262\" y=\"165\" width=\"76\" height=\"47\" fill=\"#cfc6b4\" stroke=\"#222\" stroke-width=\"1.2\" /><line x1=\"262\" y1=\"172\" x2=\"338\" y2=\"172\" stroke=\"#999\"/><line x1=\"262\" y1=\"180\" x2=\"338\" y2=\"180\" stroke=\"#999\"/><line x1=\"262\" y1=\"188\" x2=\"338\" y2=\"188\" stroke=\"#999\"/><line x1=\"262\" y1=\"196\" x2=\"338\" y2=\"196\" stroke=\"#999\"/><line x1=\"262\" y1=\"204\" x2=\"338\" y2=\"204\" stroke=\"#999\"/><ellipse cx=\"300\" cy=\"125\" rx=\"60\" ry=\"30\" fill=\"url(#h3gl)\"/><path d=\"M265.0,132.0 Q268.6,132.0 272.3,93.6 Q275.6,93.6 279.0,117.9 Q282.1,117.9 285.1,93.3 Q289.1,93.3 293.0,117.2 Q297.3,117.2 301.6,101.6 Q304.3,101.6 307.0,119.4 Q310.7,119.4 314.5,95.9 Q317.7,95.9 321.0,116.6 Q324.6,116.6 328.1,97.0 Q331.6,97.0 335.0,132.0 Z\" fill=\"#ff5a00\" opacity=\".95\"/><path d=\"M274.8,132.0 Q277.6,132.0 280.4,107.7 Q282.6,107.7 284.9,124.8 Q287.4,124.8 289.9,111.0 Q292.4,111.0 295.0,122.8 Q298.0,122.8 300.9,106.0 Q303.0,106.0 305.0,121.2 Q308.4,121.2 311.8,104.2 Q313.5,104.2 315.1,122.3 Q316.9,122.3 318.6,111.0 Q321.9,111.0 325.2,132.0 Z\" fill=\"#ff9a1a\" opacity=\".95\"/><path d=\"M284.6,132.0 Q285.7,132.0 286.8,116.6 Q288.8,116.6 290.8,124.6 Q292.8,124.6 294.8,117.4 Q295.9,117.4 296.9,127.2 Q297.9,127.2 299.0,116.0 Q301.0,116.0 303.1,128.6 Q304.7,128.6 306.3,115.8 Q307.7,115.8 309.2,126.9 Q310.2,126.9 311.1,117.5 Q313.2,117.5 315.4,132.0 Z\" fill=\"#ffd84a\" opacity=\".95\"/><g filter=\"url(#h3bl)\"><circle cx=\"304.5\" cy=\"89.0\" r=\"10.6\" fill=\"#1c1c1c\" opacity=\"0.90\"/><circle cx=\"304.9\" cy=\"79.5\" r=\"11.7\" fill=\"#1c1c1c\" opacity=\"0.85\"/><circle cx=\"316.7\" cy=\"65.9\" r=\"15.2\" fill=\"#1c1c1c\" opacity=\"0.81\"/><circle cx=\"324.8\" cy=\"50.5\" r=\"19.6\" fill=\"#1c1c1c\" opacity=\"0.77\"/><circle cx=\"337.3\" cy=\"33.9\" r=\"21.3\" fill=\"#1c1c1c\" opacity=\"0.72\"/><circle cx=\"347.7\" cy=\"17.1\" r=\"24.0\" fill=\"#1c1c1c\" opacity=\"0.68\"/><circle cx=\"351.5\" cy=\"5.2\" r=\"27.1\" fill=\"#1c1c1c\" opacity=\"0.63\"/><circle cx=\"369.5\" cy=\"-6.1\" r=\"31.9\" fill=\"#1c1c1c\" opacity=\"0.58\"/><circle cx=\"369.8\" cy=\"-23.9\" r=\"33.1\" fill=\"#1c1c1c\" opacity=\"0.54\"/><circle cx=\"382.8\" cy=\"-41.0\" r=\"37.0\" fill=\"#1c1c1c\" opacity=\"0.49\"/><circle cx=\"390.5\" cy=\"-52.1\" r=\"39.5\" fill=\"#1c1c1c\" opacity=\"0.45\"/><\/g><\/svg>", "irr": "Westcom, Engine 1 on location of a medium one-story single-family residence with fire showing through the roof of the attached garage, side Bravo. Engine 1 is going offensive, pulling a 1-3/4\" line through the front door to protect the interior from the garage. Captain Engine 1 will be Cedar Lane Command in fast-attack mode. Continue all units. Engine 2, establish water supply.", "notes": ["Fire through the garage roof: the attic over the garage often connects to the house attic.", "Protect the house first. Get a line to the door between the garage and the living space.", "Expect cars, fuel and chemicals in the garage. Watch the overhead door and roof."], "ask": "Fire is in the garage. Where does your first line go?"}, {"id": "apt-1", "kind": "apt", "title": "Garden apartment, second floor", "info": "Dispatched 6:30 pm: smoke in the hallway, Bldg C. 515 Ridge Rd.", "svg": "<svg viewBox=\"0 0 400 260\" xmlns=\"http://www.w3.org/2000/svg\" role=\"img\"><defs><linearGradient id=\"a1sk\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0\" stop-color=\"#9cc7e4\"/><stop offset=\"1\" stop-color=\"#dcebf5\"/><\/linearGradient>\n<filter id=\"a1bl\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"5\"/><\/filter>\n<filter id=\"a1bl2\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"2.2\"/><\/filter>\n<radialGradient id=\"a1gl\"><stop offset=\"0\" stop-color=\"#ffd25a\" stop-opacity=\".9\"/><stop offset=\"1\" stop-color=\"#ff6a00\" stop-opacity=\"0\"/><\/radialGradient><\/defs><rect width=\"400\" height=\"260\" fill=\"url(#a1sk)\"/><rect y=\"212\" width=\"400\" height=\"48\" fill=\"#7fa36a\"/><rect y=\"234\" width=\"400\" height=\"26\" fill=\"#55595e\"/><rect x=\"8\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"48\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"88\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"128\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"168\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"208\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"248\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"288\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"328\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"368\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"30\" y=\"120\" width=\"340\" height=\"92\" fill=\"#c4a98a\" stroke=\"#222\" stroke-width=\"1.2\" /><rect x=\"22\" y=\"112\" width=\"356\" height=\"10\" fill=\"#4f4640\" stroke=\"#222\" stroke-width=\"1.2\" /><rect x=\"45\" y=\"132\" width=\"34\" height=\"24\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"62.0\" y1=\"132\" x2=\"62.0\" y2=\"156\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"45\" y=\"178\" width=\"34\" height=\"24\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"62.0\" y1=\"178\" x2=\"62.0\" y2=\"202\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"105\" y=\"132\" width=\"34\" height=\"24\" fill=\"#3b3b3b\" stroke=\"#e9e4da\" stroke-width=\"2\" /><g filter=\"url(#a1bl)\"><circle cx=\"120.9\" cy=\"125.7\" r=\"8.2\" fill=\"#555\" opacity=\"0.85\"/><circle cx=\"124.1\" cy=\"118.2\" r=\"6.9\" fill=\"#555\" opacity=\"0.80\"/><circle cx=\"129.4\" cy=\"109.9\" r=\"9.4\" fill=\"#555\" opacity=\"0.75\"/><circle cx=\"140.2\" cy=\"92.1\" r=\"13.6\" fill=\"#555\" opacity=\"0.69\"/><circle cx=\"144.5\" cy=\"86.8\" r=\"15.6\" fill=\"#555\" opacity=\"0.64\"/><circle cx=\"149.9\" cy=\"79.4\" r=\"18.2\" fill=\"#555\" opacity=\"0.59\"/><circle cx=\"159.4\" cy=\"69.1\" r=\"17.1\" fill=\"#555\" opacity=\"0.54\"/><circle cx=\"159.1\" cy=\"52.3\" r=\"19.2\" fill=\"#555\" opacity=\"0.49\"/><circle cx=\"171.5\" cy=\"42.2\" r=\"20.9\" fill=\"#555\" opacity=\"0.43\"/><\/g><rect x=\"105\" y=\"178\" width=\"34\" height=\"24\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"122.0\" y1=\"178\" x2=\"122.0\" y2=\"202\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"235\" y=\"132\" width=\"34\" height=\"24\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"252.0\" y1=\"132\" x2=\"252.0\" y2=\"156\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"235\" y=\"178\" width=\"34\" height=\"24\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"252.0\" y1=\"178\" x2=\"252.0\" y2=\"202\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"295\" y=\"132\" width=\"34\" height=\"24\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"312.0\" y1=\"132\" x2=\"312.0\" y2=\"156\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"295\" y=\"178\" width=\"34\" height=\"24\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"312.0\" y1=\"178\" x2=\"312.0\" y2=\"202\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"176\" y=\"124\" width=\"48\" height=\"88\" fill=\"#8d7a66\" stroke=\"#222\" stroke-width=\"1.2\" /><text x=\"200\" y=\"140\" font-family=\"Arial,sans-serif\" font-size=\"8\" font-weight=\"700\" fill=\"#fff\" text-anchor=\"middle\">BLDG C<\/text><line x1=\"180\" y1=\"150\" x2=\"220\" y2=\"142\" stroke=\"#555\" stroke-width=\"2\"/><line x1=\"180\" y1=\"158\" x2=\"220\" y2=\"150\" stroke=\"#555\" stroke-width=\"2\"/><line x1=\"180\" y1=\"166\" x2=\"220\" y2=\"158\" stroke=\"#555\" stroke-width=\"2\"/><line x1=\"180\" y1=\"174\" x2=\"220\" y2=\"166\" stroke=\"#555\" stroke-width=\"2\"/><line x1=\"180\" y1=\"182\" x2=\"220\" y2=\"174\" stroke=\"#555\" stroke-width=\"2\"/><line x1=\"180\" y1=\"190\" x2=\"220\" y2=\"182\" stroke=\"#555\" stroke-width=\"2\"/><line x1=\"180\" y1=\"198\" x2=\"220\" y2=\"190\" stroke=\"#555\" stroke-width=\"2\"/><line x1=\"180\" y1=\"206\" x2=\"220\" y2=\"198\" stroke=\"#555\" stroke-width=\"2\"/><rect x=\"110\" y=\"186\" width=\"20\" height=\"26\" fill=\"#4a5f73\" stroke=\"#222\" stroke-width=\"1.2\" /><circle cx=\"126\" cy=\"199.0\" r=\"1.2\" fill=\"#ddd\"/><g filter=\"url(#a1bl)\"><circle cx=\"120.6\" cy=\"106.2\" r=\"9.7\" fill=\"#3a3a3a\" opacity=\"0.85\"/><circle cx=\"125.0\" cy=\"96.7\" r=\"9.2\" fill=\"#3a3a3a\" opacity=\"0.80\"/><circle cx=\"130.1\" cy=\"82.1\" r=\"13.8\" fill=\"#3a3a3a\" opacity=\"0.76\"/><circle cx=\"141.5\" cy=\"75.9\" r=\"15.6\" fill=\"#3a3a3a\" opacity=\"0.71\"/><circle cx=\"151.8\" cy=\"59.8\" r=\"16.3\" fill=\"#3a3a3a\" opacity=\"0.66\"/><circle cx=\"159.7\" cy=\"48.7\" r=\"19.6\" fill=\"#3a3a3a\" opacity=\"0.62\"/><circle cx=\"163.0\" cy=\"40.6\" r=\"21.3\" fill=\"#3a3a3a\" opacity=\"0.57\"/><circle cx=\"172.8\" cy=\"25.8\" r=\"23.1\" fill=\"#3a3a3a\" opacity=\"0.52\"/><circle cx=\"179.8\" cy=\"13.3\" r=\"24.2\" fill=\"#3a3a3a\" opacity=\"0.48\"/><circle cx=\"178.6\" cy=\"7.0\" r=\"26.3\" fill=\"#3a3a3a\" opacity=\"0.43\"/><\/g><rect x=\"330\" y=\"222\" width=\"40\" height=\"10\" fill=\"#777\" stroke=\"#222\" stroke-width=\"1\" rx=\"3\"/><rect x=\"338\" y=\"215\" width=\"22\" height=\"8\" fill=\"#777\" stroke=\"#222\" stroke-width=\"1\" rx=\"3\"/><circle cx=\"339\" cy=\"232\" r=\"4\" fill=\"#111\"/><circle cx=\"361\" cy=\"232\" r=\"4\" fill=\"#111\"/><\/svg>", "irr": "Westcom, Engine 1 on location of a large two-story multi-family apartment building with heavy smoke showing from a second-floor unit, side Alpha. Engine 1 is going offensive, pulling a 1-3/4\" line up the stairwell to the second floor. Captain Engine 1 will be Ridge Road Command in fast-attack mode. Continue all units and request an additional engine and truck.", "notes": ["The open stairwell is the only way out for upstairs units. Protect it.", "Top-floor unit: check the attic. Many garden apartments share one attic across units.", "Lots of occupants means lots of searching. Ask for more help early."], "ask": "Many occupants and one stairwell. What do you ask for?"}, {"id": "apt-2", "kind": "apt", "title": "Third floor, person on balcony", "info": "Dispatched 9:05 am: fire on the third floor, people trapped. 1200 Elm St, 3-story apartments.", "svg": "<svg viewBox=\"0 0 400 260\" xmlns=\"http://www.w3.org/2000/svg\" role=\"img\"><defs><linearGradient id=\"a2sk\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0\" stop-color=\"#9cc7e4\"/><stop offset=\"1\" stop-color=\"#dcebf5\"/><\/linearGradient>\n<filter id=\"a2bl\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"5\"/><\/filter>\n<filter id=\"a2bl2\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"2.2\"/><\/filter>\n<radialGradient id=\"a2gl\"><stop offset=\"0\" stop-color=\"#ffd25a\" stop-opacity=\".9\"/><stop offset=\"1\" stop-color=\"#ff6a00\" stop-opacity=\"0\"/><\/radialGradient><\/defs><rect width=\"400\" height=\"260\" fill=\"url(#a2sk)\"/><rect y=\"212\" width=\"400\" height=\"48\" fill=\"#7fa36a\"/><rect y=\"234\" width=\"400\" height=\"26\" fill=\"#55595e\"/><rect x=\"8\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"48\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"88\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"128\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"168\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"208\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"248\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"288\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"328\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"368\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"60\" y=\"70\" width=\"280\" height=\"142\" fill=\"#b9a690\" stroke=\"#222\" stroke-width=\"1.2\" /><rect x=\"52\" y=\"62\" width=\"296\" height=\"10\" fill=\"#4f4640\" stroke=\"#222\" stroke-width=\"1.2\" /><rect x=\"80\" y=\"84\" width=\"34\" height=\"26\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"97.0\" y1=\"84\" x2=\"97.0\" y2=\"110\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"150\" y=\"84\" width=\"34\" height=\"26\" fill=\"#ff8a1c\" stroke=\"#e9e4da\" stroke-width=\"2\" /><ellipse cx=\"167.0\" cy=\"97.0\" rx=\"47.599999999999994\" ry=\"31.2\" fill=\"url(#a2gl)\"/><path d=\"M151.7,87.0 Q152.4,87.0 153.1,54.3 Q155.5,54.3 157.8,81.0 Q159.8,81.0 161.8,55.7 Q162.9,55.7 163.9,77.0 Q165.1,77.0 166.2,62.3 Q168.1,62.3 170.1,77.2 Q172.5,77.2 175.0,58.1 Q175.6,58.1 176.2,78.4 Q177.5,78.4 178.8,61.5 Q180.5,61.5 182.3,87.0 Z\" fill=\"#ff5a00\" opacity=\".95\"/><path d=\"M156.0,87.0 Q156.9,87.0 157.9,66.6 Q159.1,66.6 160.4,80.1 Q161.8,80.1 163.1,71.6 Q164.0,71.6 164.8,82.1 Q166.3,82.1 167.8,66.3 Q168.5,66.3 169.2,79.0 Q169.4,79.0 169.6,69.6 Q171.6,69.6 173.6,80.7 Q175.2,80.7 176.8,70.0 Q177.4,70.0 178.0,87.0 Z\" fill=\"#ff9a1a\" opacity=\".95\"/><path d=\"M160.3,87.0 Q160.8,87.0 161.3,74.9 Q162.1,74.9 163.0,81.7 Q162.8,81.7 162.7,70.7 Q164.2,70.7 165.7,83.5 Q166.1,83.5 166.4,75.6 Q167.4,75.6 168.3,82.9 Q169.7,82.9 171.1,75.5 Q171.1,75.5 171.0,82.6 Q171.6,82.6 172.1,75.0 Q172.9,75.0 173.7,87.0 Z\" fill=\"#ffd84a\" opacity=\".95\"/><g filter=\"url(#a2bl)\"><circle cx=\"169.4\" cy=\"78.7\" r=\"8.3\" fill=\"#2a2a2a\" opacity=\"0.85\"/><circle cx=\"176.2\" cy=\"67.8\" r=\"12.3\" fill=\"#2a2a2a\" opacity=\"0.80\"/><circle cx=\"187.7\" cy=\"53.3\" r=\"15.0\" fill=\"#2a2a2a\" opacity=\"0.75\"/><circle cx=\"193.4\" cy=\"39.6\" r=\"15.5\" fill=\"#2a2a2a\" opacity=\"0.69\"/><circle cx=\"194.0\" cy=\"25.4\" r=\"18.9\" fill=\"#2a2a2a\" opacity=\"0.64\"/><circle cx=\"206.8\" cy=\"11.5\" r=\"21.9\" fill=\"#2a2a2a\" opacity=\"0.59\"/><circle cx=\"210.5\" cy=\"0.2\" r=\"24.6\" fill=\"#2a2a2a\" opacity=\"0.54\"/><circle cx=\"222.7\" cy=\"-12.7\" r=\"26.2\" fill=\"#2a2a2a\" opacity=\"0.49\"/><circle cx=\"236.7\" cy=\"-31.1\" r=\"30.6\" fill=\"#2a2a2a\" opacity=\"0.43\"/><\/g><rect x=\"220\" y=\"84\" width=\"34\" height=\"26\" fill=\"#3b3b3b\" stroke=\"#e9e4da\" stroke-width=\"2\" /><g filter=\"url(#a2bl)\"><circle cx=\"235.3\" cy=\"78.7\" r=\"7.6\" fill=\"#555\" opacity=\"0.85\"/><circle cx=\"243.7\" cy=\"66.9\" r=\"6.9\" fill=\"#555\" opacity=\"0.80\"/><circle cx=\"251.6\" cy=\"60.4\" r=\"10.1\" fill=\"#555\" opacity=\"0.75\"/><circle cx=\"255.4\" cy=\"44.4\" r=\"12.4\" fill=\"#555\" opacity=\"0.69\"/><circle cx=\"262.8\" cy=\"40.3\" r=\"16.6\" fill=\"#555\" opacity=\"0.64\"/><circle cx=\"264.0\" cy=\"27.7\" r=\"17.5\" fill=\"#555\" opacity=\"0.59\"/><circle cx=\"275.4\" cy=\"18.4\" r=\"19.4\" fill=\"#555\" opacity=\"0.54\"/><circle cx=\"273.1\" cy=\"4.1\" r=\"21.0\" fill=\"#555\" opacity=\"0.49\"/><circle cx=\"286.1\" cy=\"-0.0\" r=\"22.7\" fill=\"#555\" opacity=\"0.43\"/><\/g><rect x=\"290\" y=\"84\" width=\"34\" height=\"26\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"307.0\" y1=\"84\" x2=\"307.0\" y2=\"110\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"80\" y=\"126\" width=\"34\" height=\"26\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"97.0\" y1=\"126\" x2=\"97.0\" y2=\"152\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"150\" y=\"126\" width=\"34\" height=\"26\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"167.0\" y1=\"126\" x2=\"167.0\" y2=\"152\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"220\" y=\"126\" width=\"34\" height=\"26\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"237.0\" y1=\"126\" x2=\"237.0\" y2=\"152\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"290\" y=\"126\" width=\"34\" height=\"26\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"307.0\" y1=\"126\" x2=\"307.0\" y2=\"152\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"80\" y=\"168\" width=\"34\" height=\"26\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"97.0\" y1=\"168\" x2=\"97.0\" y2=\"194\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"150\" y=\"168\" width=\"34\" height=\"26\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"167.0\" y1=\"168\" x2=\"167.0\" y2=\"194\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"220\" y=\"168\" width=\"34\" height=\"26\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"237.0\" y1=\"168\" x2=\"237.0\" y2=\"194\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"290\" y=\"168\" width=\"34\" height=\"26\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"307.0\" y1=\"168\" x2=\"307.0\" y2=\"194\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"212\" y=\"110\" width=\"50\" height=\"4\" fill=\"#555\" stroke=\"none\" stroke-width=\"0\" /><line x1=\"214\" y1=\"110\" x2=\"214\" y2=\"98\" stroke=\"#555\"/><line x1=\"220\" y1=\"110\" x2=\"220\" y2=\"98\" stroke=\"#555\"/><line x1=\"226\" y1=\"110\" x2=\"226\" y2=\"98\" stroke=\"#555\"/><line x1=\"232\" y1=\"110\" x2=\"232\" y2=\"98\" stroke=\"#555\"/><line x1=\"238\" y1=\"110\" x2=\"238\" y2=\"98\" stroke=\"#555\"/><line x1=\"244\" y1=\"110\" x2=\"244\" y2=\"98\" stroke=\"#555\"/><line x1=\"250\" y1=\"110\" x2=\"250\" y2=\"98\" stroke=\"#555\"/><line x1=\"256\" y1=\"110\" x2=\"256\" y2=\"98\" stroke=\"#555\"/><circle cx=\"242\" cy=\"90\" r=\"4\" fill=\"#f1c9a5\"/><rect x=\"238\" y=\"94\" width=\"8\" height=\"12\" fill=\"#c33\"/><line x1=\"246\" y1=\"96\" x2=\"254\" y2=\"86\" stroke=\"#f1c9a5\" stroke-width=\"2.5\"/><g filter=\"url(#a2bl)\"><circle cx=\"171.7\" cy=\"56.7\" r=\"9.3\" fill=\"#1f1f1f\" opacity=\"0.90\"/><circle cx=\"176.3\" cy=\"38.0\" r=\"12.6\" fill=\"#1f1f1f\" opacity=\"0.85\"/><circle cx=\"190.0\" cy=\"24.3\" r=\"15.7\" fill=\"#1f1f1f\" opacity=\"0.81\"/><circle cx=\"203.4\" cy=\"11.2\" r=\"21.6\" fill=\"#1f1f1f\" opacity=\"0.77\"/><circle cx=\"206.1\" cy=\"-3.4\" r=\"22.3\" fill=\"#1f1f1f\" opacity=\"0.72\"/><circle cx=\"216.8\" cy=\"-18.4\" r=\"25.5\" fill=\"#1f1f1f\" opacity=\"0.68\"/><circle cx=\"228.1\" cy=\"-36.9\" r=\"28.1\" fill=\"#1f1f1f\" opacity=\"0.63\"/><circle cx=\"234.0\" cy=\"-51.0\" r=\"31.5\" fill=\"#1f1f1f\" opacity=\"0.58\"/><circle cx=\"243.5\" cy=\"-66.0\" r=\"35.7\" fill=\"#1f1f1f\" opacity=\"0.54\"/><circle cx=\"261.0\" cy=\"-81.6\" r=\"36.9\" fill=\"#1f1f1f\" opacity=\"0.49\"/><circle cx=\"273.1\" cy=\"-92.9\" r=\"42.2\" fill=\"#1f1f1f\" opacity=\"0.45\"/><\/g><\/svg>", "irr": "Westcom, Engine 1 on location of a large three-story multi-family apartment building with fire showing from the third floor, side Alpha, and an occupant on a third-floor balcony. Engine 1 is going offensive, rescue is our first priority. Captain Engine 1 will be Elm Street Command in fast-attack mode. Request a second alarm. Truck 1, ladder the third-floor balcony on side Alpha.", "notes": ["A visible victim comes first. Say it on the radio so every company hears it.", "Fire on the top floor goes into the attic fast. Plan on pulling ceilings.", "A 3-story building with a known rescue: a second alarm is reasonable from the start."], "ask": "You can see someone trapped. What comes first?"}, {"id": "apt-3", "kind": "apt", "title": "Fire through the roof", "info": "Dispatched 3:20 pm: apartment fire, multiple calls. 88 Lakeview Dr.", "svg": "<svg viewBox=\"0 0 400 260\" xmlns=\"http://www.w3.org/2000/svg\" role=\"img\"><defs><linearGradient id=\"a3sk\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0\" stop-color=\"#9cc7e4\"/><stop offset=\"1\" stop-color=\"#dcebf5\"/><\/linearGradient>\n<filter id=\"a3bl\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"5\"/><\/filter>\n<filter id=\"a3bl2\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"2.2\"/><\/filter>\n<radialGradient id=\"a3gl\"><stop offset=\"0\" stop-color=\"#ffd25a\" stop-opacity=\".9\"/><stop offset=\"1\" stop-color=\"#ff6a00\" stop-opacity=\"0\"/><\/radialGradient><\/defs><rect width=\"400\" height=\"260\" fill=\"url(#a3sk)\"/><rect y=\"212\" width=\"400\" height=\"48\" fill=\"#7fa36a\"/><rect y=\"234\" width=\"400\" height=\"26\" fill=\"#55595e\"/><rect x=\"8\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"48\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"88\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"128\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"168\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"208\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"248\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"288\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"328\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"368\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"30\" y=\"125\" width=\"340\" height=\"87\" fill=\"#cbb59a\" stroke=\"#222\" stroke-width=\"1.2\" /><polygon points=\"20,125 70,95 330,95 380,125\" fill=\"#4c4038\" stroke=\"#222\" stroke-width=\"1.2\"/><rect x=\"45\" y=\"140\" width=\"32\" height=\"22\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"61.0\" y1=\"140\" x2=\"61.0\" y2=\"162\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"45\" y=\"180\" width=\"32\" height=\"22\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"61.0\" y1=\"180\" x2=\"61.0\" y2=\"202\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"105\" y=\"140\" width=\"32\" height=\"22\" fill=\"#3b3b3b\" stroke=\"#e9e4da\" stroke-width=\"2\" /><g filter=\"url(#a3bl)\"><circle cx=\"115.8\" cy=\"134.5\" r=\"5.8\" fill=\"#555\" opacity=\"0.85\"/><circle cx=\"126.3\" cy=\"126.0\" r=\"10.2\" fill=\"#555\" opacity=\"0.80\"/><circle cx=\"133.7\" cy=\"112.0\" r=\"12.5\" fill=\"#555\" opacity=\"0.75\"/><circle cx=\"138.9\" cy=\"104.3\" r=\"11.3\" fill=\"#555\" opacity=\"0.69\"/><circle cx=\"148.4\" cy=\"97.4\" r=\"14.3\" fill=\"#555\" opacity=\"0.64\"/><circle cx=\"147.0\" cy=\"82.2\" r=\"16.6\" fill=\"#555\" opacity=\"0.59\"/><circle cx=\"157.1\" cy=\"73.8\" r=\"20.2\" fill=\"#555\" opacity=\"0.54\"/><circle cx=\"168.8\" cy=\"65.0\" r=\"22.3\" fill=\"#555\" opacity=\"0.49\"/><circle cx=\"171.5\" cy=\"52.4\" r=\"24.7\" fill=\"#555\" opacity=\"0.43\"/><\/g><rect x=\"105\" y=\"180\" width=\"32\" height=\"22\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"121.0\" y1=\"180\" x2=\"121.0\" y2=\"202\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"245\" y=\"140\" width=\"32\" height=\"22\" fill=\"#3b3b3b\" stroke=\"#e9e4da\" stroke-width=\"2\" /><g filter=\"url(#a3bl)\"><circle cx=\"257.5\" cy=\"135.5\" r=\"6.7\" fill=\"#555\" opacity=\"0.85\"/><circle cx=\"264.7\" cy=\"125.7\" r=\"7.6\" fill=\"#555\" opacity=\"0.80\"/><circle cx=\"278.1\" cy=\"110.2\" r=\"12.3\" fill=\"#555\" opacity=\"0.75\"/><circle cx=\"282.5\" cy=\"104.8\" r=\"12.0\" fill=\"#555\" opacity=\"0.69\"/><circle cx=\"283.8\" cy=\"97.9\" r=\"13.3\" fill=\"#555\" opacity=\"0.64\"/><circle cx=\"290.7\" cy=\"84.7\" r=\"17.4\" fill=\"#555\" opacity=\"0.59\"/><circle cx=\"297.7\" cy=\"77.2\" r=\"20.2\" fill=\"#555\" opacity=\"0.54\"/><circle cx=\"302.1\" cy=\"64.2\" r=\"20.3\" fill=\"#555\" opacity=\"0.49\"/><circle cx=\"307.4\" cy=\"50.6\" r=\"24.7\" fill=\"#555\" opacity=\"0.43\"/><\/g><rect x=\"245\" y=\"180\" width=\"32\" height=\"22\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"261.0\" y1=\"180\" x2=\"261.0\" y2=\"202\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"305\" y=\"140\" width=\"32\" height=\"22\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"321.0\" y1=\"140\" x2=\"321.0\" y2=\"162\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"305\" y=\"180\" width=\"32\" height=\"22\" fill=\"#8fb3cc\" stroke=\"#e9e4da\" stroke-width=\"2\" /><line x1=\"321.0\" y1=\"180\" x2=\"321.0\" y2=\"202\" stroke=\"#e9e4da\" stroke-width=\"1\" opacity=\".7\"/><rect x=\"170\" y=\"128\" width=\"60\" height=\"84\" fill=\"#8d7a66\" stroke=\"#222\" stroke-width=\"1.2\" /><ellipse cx=\"200\" cy=\"95\" rx=\"70\" ry=\"30\" fill=\"url(#a3gl)\"/><path d=\"M155.0,100.0 Q158.9,100.0 162.7,51.6 Q167.9,51.6 173.0,84.4 Q178.1,84.4 183.3,64.3 Q187.1,64.3 191.0,83.5 Q195.7,83.5 200.3,60.8 Q204.7,60.8 209.0,92.2 Q213.5,92.2 218.1,66.5 Q222.5,66.5 227.0,89.6 Q232.2,89.6 237.5,63.1 Q241.2,63.1 245.0,100.0 Z\" fill=\"#ff5a00\" opacity=\".95\"/><path d=\"M167.6,100.0 Q170.6,100.0 173.5,75.8 Q177.1,75.8 180.6,91.4 Q183.1,91.4 185.7,75.2 Q189.6,75.2 193.5,89.3 Q197.2,89.3 200.8,74.8 Q203.6,74.8 206.5,88.9 Q209.8,88.9 213.1,76.0 Q216.3,76.0 219.4,93.6 Q223.1,93.6 226.7,63.8 Q229.6,63.8 232.4,100.0 Z\" fill=\"#ff9a1a\" opacity=\".95\"/><path d=\"M180.2,100.0 Q182.4,100.0 184.6,84.3 Q186.3,84.3 188.1,92.5 Q189.2,92.5 190.3,77.2 Q193.2,77.2 196.0,95.8 Q199.0,95.8 201.9,80.2 Q202.9,80.2 204.0,95.2 Q205.1,95.2 206.3,82.4 Q209.1,82.4 211.9,92.7 Q213.4,92.7 214.9,84.2 Q217.4,84.2 219.8,100.0 Z\" fill=\"#ffd84a\" opacity=\".95\"/><path d=\"M130.0,104.0 Q131.3,104.0 132.7,88.0 Q135.3,88.0 138.0,99.4 Q139.3,99.4 140.6,87.2 Q143.3,87.2 146.0,100.1 Q147.0,100.1 148.1,88.4 Q151.0,88.4 154.0,98.5 Q156.8,98.5 159.7,81.6 Q160.8,81.6 162.0,97.8 Q163.3,97.8 164.7,80.7 Q167.3,80.7 170.0,104.0 Z\" fill=\"#ff5a00\" opacity=\".95\"/><path d=\"M135.6,104.0 Q137.1,104.0 138.6,89.2 Q140.0,89.2 141.4,99.8 Q142.3,99.8 143.2,86.7 Q145.1,86.7 147.1,100.9 Q148.2,100.9 149.4,88.2 Q151.1,88.2 152.9,100.3 Q153.4,100.3 153.8,92.6 Q156.2,92.6 158.6,98.7 Q160.1,98.7 161.6,90.6 Q163.0,90.6 164.4,104.0 Z\" fill=\"#ff9a1a\" opacity=\".95\"/><path d=\"M141.2,104.0 Q142.4,104.0 143.5,95.8 Q144.1,95.8 144.7,101.7 Q146.4,101.7 148.0,94.8 Q148.1,94.8 148.2,100.9 Q148.8,100.9 149.4,92.3 Q150.6,92.3 151.8,100.7 Q153.3,100.7 154.8,94.9 Q155.1,94.9 155.3,100.6 Q155.3,100.6 155.3,96.2 Q157.1,96.2 158.8,104.0 Z\" fill=\"#ffd84a\" opacity=\".95\"/><g filter=\"url(#a3bl)\"><circle cx=\"197.5\" cy=\"62.4\" r=\"10.5\" fill=\"#1c1c1c\" opacity=\"0.92\"/><circle cx=\"209.7\" cy=\"48.0\" r=\"14.7\" fill=\"#1c1c1c\" opacity=\"0.88\"/><circle cx=\"222.8\" cy=\"34.3\" r=\"18.6\" fill=\"#1c1c1c\" opacity=\"0.84\"/><circle cx=\"222.7\" cy=\"22.6\" r=\"22.1\" fill=\"#1c1c1c\" opacity=\"0.79\"/><circle cx=\"234.6\" cy=\"3.9\" r=\"24.1\" fill=\"#1c1c1c\" opacity=\"0.75\"/><circle cx=\"250.8\" cy=\"-9.4\" r=\"28.4\" fill=\"#1c1c1c\" opacity=\"0.71\"/><circle cx=\"257.9\" cy=\"-25.6\" r=\"31.4\" fill=\"#1c1c1c\" opacity=\"0.67\"/><circle cx=\"265.1\" cy=\"-38.6\" r=\"33.9\" fill=\"#1c1c1c\" opacity=\"0.62\"/><circle cx=\"274.5\" cy=\"-54.5\" r=\"36.6\" fill=\"#1c1c1c\" opacity=\"0.58\"/><circle cx=\"281.5\" cy=\"-72.2\" r=\"38.7\" fill=\"#1c1c1c\" opacity=\"0.54\"/><circle cx=\"294.8\" cy=\"-83.6\" r=\"42.8\" fill=\"#1c1c1c\" opacity=\"0.50\"/><circle cx=\"293.4\" cy=\"-102.6\" r=\"43.1\" fill=\"#1c1c1c\" opacity=\"0.46\"/><\/g><\/svg>", "irr": "Westcom, Engine 1 on location of a large two-story multi-family apartment building with fire through the roof, center of the building. Engine 1 is going offensive, pulling a 1-3/4\" line to the second floor to get ahead of the attic fire. Captain Engine 1 will be Lakeview Drive Command in fast-attack mode. Request a second alarm. Engine 2, establish water supply.", "notes": ["Fire through the roof of a garden apartment means a big attic fire that will travel both ways.", "Get ahead of it: pull ceilings in the units next to the fire, not under it.", "Set a trigger to go defensive, like fire through the roof at both ends or a sagging roof line."], "ask": "The roof is already burning. Offensive or defensive, and what would change your mind?"}, {"id": "com-1", "kind": "commercial", "title": "Strip mall, middle unit", "info": "Dispatched 10:10 pm: smoke from the nail salon, businesses closed. 3300 Hwy 6.", "svg": "<svg viewBox=\"0 0 400 260\" xmlns=\"http://www.w3.org/2000/svg\" role=\"img\"><defs><linearGradient id=\"c1sk\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0\" stop-color=\"#9cc7e4\"/><stop offset=\"1\" stop-color=\"#dcebf5\"/><\/linearGradient>\n<filter id=\"c1bl\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"5\"/><\/filter>\n<filter id=\"c1bl2\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"2.2\"/><\/filter>\n<radialGradient id=\"c1gl\"><stop offset=\"0\" stop-color=\"#ffd25a\" stop-opacity=\".9\"/><stop offset=\"1\" stop-color=\"#ff6a00\" stop-opacity=\"0\"/><\/radialGradient><\/defs><rect width=\"400\" height=\"260\" fill=\"url(#c1sk)\"/><rect y=\"212\" width=\"400\" height=\"48\" fill=\"#7fa36a\"/><rect y=\"234\" width=\"400\" height=\"26\" fill=\"#55595e\"/><rect x=\"8\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"48\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"88\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"128\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"168\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"208\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"248\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"288\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"328\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"368\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"20\" y=\"130\" width=\"360\" height=\"82\" fill=\"#c9bfae\" stroke=\"#222\" stroke-width=\"1.2\" /><rect x=\"16\" y=\"122\" width=\"368\" height=\"12\" fill=\"#7a6e60\" stroke=\"#222\" stroke-width=\"1.2\" /><rect x=\"24\" y=\"138\" width=\"64\" height=\"12\" fill=\"#2b4b6b\" stroke=\"none\" stroke-width=\"0\" /><text x=\"56\" y=\"147\" font-family=\"Arial,sans-serif\" font-size=\"8\" font-weight=\"700\" fill=\"#fff\" text-anchor=\"middle\">DONUTS<\/text><rect x=\"28\" y=\"156\" width=\"56\" height=\"50\" fill=\"#9ab7c9\" stroke=\"#555\" stroke-width=\"1.5\" /><rect x=\"96\" y=\"138\" width=\"64\" height=\"12\" fill=\"#2b4b6b\" stroke=\"none\" stroke-width=\"0\" /><text x=\"128\" y=\"147\" font-family=\"Arial,sans-serif\" font-size=\"8\" font-weight=\"700\" fill=\"#fff\" text-anchor=\"middle\">TAX<\/text><rect x=\"100\" y=\"156\" width=\"56\" height=\"50\" fill=\"#9ab7c9\" stroke=\"#555\" stroke-width=\"1.5\" /><rect x=\"168\" y=\"138\" width=\"64\" height=\"12\" fill=\"#333\" stroke=\"none\" stroke-width=\"0\" /><text x=\"200\" y=\"147\" font-family=\"Arial,sans-serif\" font-size=\"8\" font-weight=\"700\" fill=\"#fff\" text-anchor=\"middle\">NAILS<\/text><rect x=\"172\" y=\"156\" width=\"56\" height=\"50\" fill=\"#2e2e2e\" stroke=\"#555\" stroke-width=\"1.5\" /><g filter=\"url(#c1bl)\"><circle cx=\"203.6\" cy=\"151.4\" r=\"5.4\" fill=\"#333\" opacity=\"0.80\"/><circle cx=\"210.1\" cy=\"142.8\" r=\"8.4\" fill=\"#333\" opacity=\"0.75\"/><circle cx=\"213.1\" cy=\"128.5\" r=\"9.1\" fill=\"#333\" opacity=\"0.69\"/><circle cx=\"220.1\" cy=\"119.1\" r=\"14.0\" fill=\"#333\" opacity=\"0.64\"/><circle cx=\"219.1\" cy=\"105.1\" r=\"13.3\" fill=\"#333\" opacity=\"0.58\"/><circle cx=\"234.7\" cy=\"98.4\" r=\"18.1\" fill=\"#333\" opacity=\"0.53\"/><circle cx=\"233.3\" cy=\"89.6\" r=\"17.1\" fill=\"#333\" opacity=\"0.47\"/><circle cx=\"246.7\" cy=\"77.5\" r=\"19.7\" fill=\"#333\" opacity=\"0.41\"/><\/g><rect x=\"240\" y=\"138\" width=\"64\" height=\"12\" fill=\"#2b4b6b\" stroke=\"none\" stroke-width=\"0\" /><text x=\"272\" y=\"147\" font-family=\"Arial,sans-serif\" font-size=\"8\" font-weight=\"700\" fill=\"#fff\" text-anchor=\"middle\">PHONES<\/text><rect x=\"244\" y=\"156\" width=\"56\" height=\"50\" fill=\"#9ab7c9\" stroke=\"#555\" stroke-width=\"1.5\" /><rect x=\"312\" y=\"138\" width=\"64\" height=\"12\" fill=\"#2b4b6b\" stroke=\"none\" stroke-width=\"0\" /><text x=\"344\" y=\"147\" font-family=\"Arial,sans-serif\" font-size=\"8\" font-weight=\"700\" fill=\"#fff\" text-anchor=\"middle\">PIZZA<\/text><rect x=\"316\" y=\"156\" width=\"56\" height=\"50\" fill=\"#9ab7c9\" stroke=\"#555\" stroke-width=\"1.5\" /><g filter=\"url(#c1bl)\"><circle cx=\"164.3\" cy=\"117.4\" r=\"8.4\" fill=\"#2a2a2a\" opacity=\"0.88\"/><circle cx=\"177.3\" cy=\"101.5\" r=\"13.0\" fill=\"#2a2a2a\" opacity=\"0.84\"/><circle cx=\"180.0\" cy=\"85.4\" r=\"16.7\" fill=\"#2a2a2a\" opacity=\"0.79\"/><circle cx=\"196.5\" cy=\"73.2\" r=\"18.8\" fill=\"#2a2a2a\" opacity=\"0.75\"/><circle cx=\"197.3\" cy=\"62.5\" r=\"18.3\" fill=\"#2a2a2a\" opacity=\"0.70\"/><circle cx=\"214.1\" cy=\"48.9\" r=\"21.0\" fill=\"#2a2a2a\" opacity=\"0.66\"/><circle cx=\"218.6\" cy=\"34.1\" r=\"25.4\" fill=\"#2a2a2a\" opacity=\"0.62\"/><circle cx=\"223.3\" cy=\"19.8\" r=\"26.0\" fill=\"#2a2a2a\" opacity=\"0.57\"/><circle cx=\"240.5\" cy=\"6.6\" r=\"31.3\" fill=\"#2a2a2a\" opacity=\"0.53\"/><circle cx=\"250.3\" cy=\"-2.8\" r=\"31.8\" fill=\"#2a2a2a\" opacity=\"0.48\"/><circle cx=\"253.2\" cy=\"-17.5\" r=\"36.6\" fill=\"#2a2a2a\" opacity=\"0.44\"/><\/g><rect x=\"40\" y=\"222\" width=\"40\" height=\"10\" fill=\"#2f6f4a\" stroke=\"#222\" stroke-width=\"1\" rx=\"3\"/><rect x=\"48\" y=\"215\" width=\"22\" height=\"8\" fill=\"#2f6f4a\" stroke=\"#222\" stroke-width=\"1\" rx=\"3\"/><circle cx=\"49\" cy=\"232\" r=\"4\" fill=\"#111\"/><circle cx=\"71\" cy=\"232\" r=\"4\" fill=\"#111\"/><rect x=\"300\" y=\"222\" width=\"40\" height=\"10\" fill=\"#888\" stroke=\"#222\" stroke-width=\"1\" rx=\"3\"/><rect x=\"308\" y=\"215\" width=\"22\" height=\"8\" fill=\"#888\" stroke=\"#222\" stroke-width=\"1\" rx=\"3\"/><circle cx=\"309\" cy=\"232\" r=\"4\" fill=\"#111\"/><circle cx=\"331\" cy=\"232\" r=\"4\" fill=\"#111\"/><\/svg>", "irr": "Westcom, Engine 1 on location of a large one-story commercial strip mall with heavy smoke showing from the middle unit, side Alpha. Engine 1 is going offensive, pulling a 2-1/2\" line through the front of the nail salon. Captain Engine 1 will be Highway 6 Command in fast-attack mode. Request a second alarm. Truck 1, forcible entry and check the exposures on both sides.", "notes": ["Strip malls often share one open cockloft. Check the units on both sides early.", "Closed businesses mean forcible entry, front and rear. Assign it.", "Lightweight truss roofs fail fast. Watch the roof line over the fire unit."], "ask": "Which units are exposures, and how do you check them?"}, {"id": "com-2", "kind": "commercial", "title": "Metal warehouse", "info": "Dispatched 5:45 am: smoke from a warehouse, no one on site. 4100 Industrial Blvd.", "svg": "<svg viewBox=\"0 0 400 260\" xmlns=\"http://www.w3.org/2000/svg\" role=\"img\"><defs><linearGradient id=\"c2sk\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0\" stop-color=\"#9cc7e4\"/><stop offset=\"1\" stop-color=\"#dcebf5\"/><\/linearGradient>\n<filter id=\"c2bl\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"5\"/><\/filter>\n<filter id=\"c2bl2\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"2.2\"/><\/filter>\n<radialGradient id=\"c2gl\"><stop offset=\"0\" stop-color=\"#ffd25a\" stop-opacity=\".9\"/><stop offset=\"1\" stop-color=\"#ff6a00\" stop-opacity=\"0\"/><\/radialGradient><\/defs><rect width=\"400\" height=\"260\" fill=\"url(#c2sk)\"/><rect y=\"212\" width=\"400\" height=\"48\" fill=\"#7fa36a\"/><rect y=\"234\" width=\"400\" height=\"26\" fill=\"#55595e\"/><rect x=\"8\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"48\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"88\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"128\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"168\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"208\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"248\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"288\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"328\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"368\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"30\" y=\"120\" width=\"340\" height=\"92\" fill=\"#a9b2b8\" stroke=\"#222\" stroke-width=\"1.2\" /><polygon points=\"26,120 200,104 374,120\" fill=\"#7d868c\" stroke=\"#222\" stroke-width=\"1.2\"/><line x1=\"34\" y1=\"122\" x2=\"34\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"44\" y1=\"122\" x2=\"44\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"54\" y1=\"122\" x2=\"54\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"64\" y1=\"122\" x2=\"64\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"74\" y1=\"122\" x2=\"74\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"84\" y1=\"122\" x2=\"84\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"94\" y1=\"122\" x2=\"94\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"104\" y1=\"122\" x2=\"104\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"114\" y1=\"122\" x2=\"114\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"124\" y1=\"122\" x2=\"124\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"134\" y1=\"122\" x2=\"134\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"144\" y1=\"122\" x2=\"144\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"154\" y1=\"122\" x2=\"154\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"164\" y1=\"122\" x2=\"164\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"174\" y1=\"122\" x2=\"174\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"184\" y1=\"122\" x2=\"184\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"194\" y1=\"122\" x2=\"194\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"204\" y1=\"122\" x2=\"204\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"214\" y1=\"122\" x2=\"214\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"224\" y1=\"122\" x2=\"224\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"234\" y1=\"122\" x2=\"234\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"244\" y1=\"122\" x2=\"244\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"254\" y1=\"122\" x2=\"254\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"264\" y1=\"122\" x2=\"264\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"274\" y1=\"122\" x2=\"274\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"284\" y1=\"122\" x2=\"284\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"294\" y1=\"122\" x2=\"294\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"304\" y1=\"122\" x2=\"304\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"314\" y1=\"122\" x2=\"314\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"324\" y1=\"122\" x2=\"324\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"334\" y1=\"122\" x2=\"334\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"344\" y1=\"122\" x2=\"344\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"354\" y1=\"122\" x2=\"354\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><line x1=\"364\" y1=\"122\" x2=\"364\" y2=\"212\" stroke=\"#98a1a7\" stroke-width=\"1\"/><rect x=\"60\" y=\"150\" width=\"56\" height=\"62\" fill=\"#6e777d\" stroke=\"#333\" stroke-width=\"1.5\" /><rect x=\"140\" y=\"150\" width=\"56\" height=\"62\" fill=\"#6e777d\" stroke=\"#333\" stroke-width=\"1.5\" /><rect x=\"220\" y=\"150\" width=\"56\" height=\"62\" fill=\"#6e777d\" stroke=\"#333\" stroke-width=\"1.5\" /><rect x=\"232\" y=\"175\" width=\"32\" height=\"37\" fill=\"#222\" stroke=\"none\" stroke-width=\"0\" /><g filter=\"url(#c2bl)\"><circle cx=\"246.8\" cy=\"168.5\" r=\"9.2\" fill=\"#1a1a1a\" opacity=\"0.90\"/><circle cx=\"256.5\" cy=\"154.1\" r=\"10.7\" fill=\"#1a1a1a\" opacity=\"0.84\"/><circle cx=\"266.2\" cy=\"141.2\" r=\"10.8\" fill=\"#1a1a1a\" opacity=\"0.79\"/><circle cx=\"274.9\" cy=\"134.0\" r=\"13.2\" fill=\"#1a1a1a\" opacity=\"0.73\"/><circle cx=\"272.1\" cy=\"120.1\" r=\"17.6\" fill=\"#1a1a1a\" opacity=\"0.68\"/><circle cx=\"278.7\" cy=\"110.4\" r=\"19.1\" fill=\"#1a1a1a\" opacity=\"0.62\"/><circle cx=\"294.3\" cy=\"99.5\" r=\"23.2\" fill=\"#1a1a1a\" opacity=\"0.57\"/><circle cx=\"294.0\" cy=\"81.3\" r=\"22.8\" fill=\"#1a1a1a\" opacity=\"0.52\"/><circle cx=\"309.0\" cy=\"68.8\" r=\"28.2\" fill=\"#1a1a1a\" opacity=\"0.46\"/><\/g><rect x=\"310\" y=\"180\" width=\"22\" height=\"32\" fill=\"#556\" stroke=\"#222\" stroke-width=\"1.2\" /><circle cx=\"328\" cy=\"196.0\" r=\"1.2\" fill=\"#ddd\"/><text x=\"200\" y=\"140\" font-family=\"Arial,sans-serif\" font-size=\"10\" font-weight=\"700\" fill=\"#2b3a46\" text-anchor=\"middle\">SUPPLY CO.<\/text><g filter=\"url(#c2bl)\"><circle cx=\"151.8\" cy=\"92.4\" r=\"11.9\" fill=\"#151515\" opacity=\"0.92\"/><circle cx=\"154.2\" cy=\"82.3\" r=\"13.1\" fill=\"#151515\" opacity=\"0.88\"/><circle cx=\"168.4\" cy=\"68.5\" r=\"16.3\" fill=\"#151515\" opacity=\"0.84\"/><circle cx=\"178.3\" cy=\"57.6\" r=\"18.8\" fill=\"#151515\" opacity=\"0.79\"/><circle cx=\"187.3\" cy=\"38.2\" r=\"19.9\" fill=\"#151515\" opacity=\"0.75\"/><circle cx=\"195.1\" cy=\"26.8\" r=\"22.9\" fill=\"#151515\" opacity=\"0.71\"/><circle cx=\"206.8\" cy=\"11.8\" r=\"29.2\" fill=\"#151515\" opacity=\"0.67\"/><circle cx=\"217.7\" cy=\"3.6\" r=\"29.9\" fill=\"#151515\" opacity=\"0.62\"/><circle cx=\"227.5\" cy=\"-12.6\" r=\"33.3\" fill=\"#151515\" opacity=\"0.58\"/><circle cx=\"237.8\" cy=\"-26.5\" r=\"36.3\" fill=\"#151515\" opacity=\"0.54\"/><circle cx=\"249.2\" cy=\"-42.1\" r=\"37.6\" fill=\"#151515\" opacity=\"0.50\"/><circle cx=\"258.6\" cy=\"-56.3\" r=\"42.9\" fill=\"#151515\" opacity=\"0.46\"/><\/g><g filter=\"url(#c2bl)\"><circle cx=\"263.6\" cy=\"92.6\" r=\"11.3\" fill=\"#1e1e1e\" opacity=\"0.90\"/><circle cx=\"262.6\" cy=\"83.8\" r=\"11.7\" fill=\"#1e1e1e\" opacity=\"0.85\"/><circle cx=\"275.8\" cy=\"66.6\" r=\"16.3\" fill=\"#1e1e1e\" opacity=\"0.81\"/><circle cx=\"279.5\" cy=\"58.7\" r=\"17.4\" fill=\"#1e1e1e\" opacity=\"0.77\"/><circle cx=\"287.1\" cy=\"41.0\" r=\"19.7\" fill=\"#1e1e1e\" opacity=\"0.72\"/><circle cx=\"306.8\" cy=\"26.5\" r=\"24.6\" fill=\"#1e1e1e\" opacity=\"0.68\"/><circle cx=\"308.3\" cy=\"14.4\" r=\"24.9\" fill=\"#1e1e1e\" opacity=\"0.63\"/><circle cx=\"315.9\" cy=\"-3.2\" r=\"30.9\" fill=\"#1e1e1e\" opacity=\"0.58\"/><circle cx=\"328.2\" cy=\"-14.5\" r=\"30.4\" fill=\"#1e1e1e\" opacity=\"0.54\"/><circle cx=\"339.5\" cy=\"-29.9\" r=\"33.7\" fill=\"#1e1e1e\" opacity=\"0.49\"/><circle cx=\"343.2\" cy=\"-38.6\" r=\"38.8\" fill=\"#1e1e1e\" opacity=\"0.45\"/><\/g><\/svg>", "irr": "Westcom, Engine 1 on location of a large one-story commercial metal warehouse with heavy black smoke showing from the roof and the open bay door, side Alpha. Engine 1 is investigating and establishing water supply, pulling a 2-1/2\" line to side Alpha. Captain Engine 1 will be Industrial Boulevard Command in investigative mode. Request a second alarm and the closest truck.", "notes": ["Big open box, high fire load, unknown contents. Find out what is stored inside before going deep.", "Thick, fast black smoke from the roof means a lot of fire. Unprotected steel roofs can fail early.", "Nobody on site: the life hazard is mostly your own crews. Weigh that when you pick a strategy."], "ask": "No one is inside. How does that change your risk?"}, {"id": "com-3", "kind": "commercial", "title": "Restaurant kitchen hood", "info": "Dispatched 12:20 pm: fire in the kitchen, restaurant open. 650 Market St.", "svg": "<svg viewBox=\"0 0 400 260\" xmlns=\"http://www.w3.org/2000/svg\" role=\"img\"><defs><linearGradient id=\"c3sk\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0\" stop-color=\"#9cc7e4\"/><stop offset=\"1\" stop-color=\"#dcebf5\"/><\/linearGradient>\n<filter id=\"c3bl\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"5\"/><\/filter>\n<filter id=\"c3bl2\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"><feGaussianBlur stdDeviation=\"2.2\"/><\/filter>\n<radialGradient id=\"c3gl\"><stop offset=\"0\" stop-color=\"#ffd25a\" stop-opacity=\".9\"/><stop offset=\"1\" stop-color=\"#ff6a00\" stop-opacity=\"0\"/><\/radialGradient><\/defs><rect width=\"400\" height=\"260\" fill=\"url(#c3sk)\"/><rect y=\"212\" width=\"400\" height=\"48\" fill=\"#7fa36a\"/><rect y=\"234\" width=\"400\" height=\"26\" fill=\"#55595e\"/><rect x=\"8\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"48\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"88\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"128\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"168\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"208\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"248\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"288\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"328\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"368\" y=\"246\" width=\"18\" height=\"2.5\" fill=\"#e8d36a\" opacity=\".8\"/><rect x=\"28\" y=\"194\" width=\"4\" height=\"18\" fill=\"#5a3d25\" stroke=\"none\" stroke-width=\"0\" /><circle cx=\"30\" cy=\"186\" r=\"13\" fill=\"#3f6e34\"/><rect x=\"90\" y=\"140\" width=\"220\" height=\"72\" fill=\"#d8b48a\" stroke=\"#222\" stroke-width=\"1.2\" /><rect x=\"84\" y=\"132\" width=\"232\" height=\"10\" fill=\"#5b3a29\" stroke=\"#222\" stroke-width=\"1.2\" /><rect x=\"105\" y=\"155\" width=\"70\" height=\"45\" fill=\"#9ab7c9\" stroke=\"#555\" stroke-width=\"1.5\" /><rect x=\"225\" y=\"155\" width=\"70\" height=\"45\" fill=\"#9ab7c9\" stroke=\"#555\" stroke-width=\"1.5\" /><rect x=\"186\" y=\"165\" width=\"28\" height=\"47\" fill=\"#5b3a29\" stroke=\"#222\" stroke-width=\"1.2\" /><circle cx=\"210\" cy=\"188.5\" r=\"1.2\" fill=\"#ddd\"/><rect x=\"130\" y=\"145\" width=\"140\" height=\"10\" fill=\"#7a2a1f\" stroke=\"none\" stroke-width=\"0\" /><text x=\"200\" y=\"153\" font-family=\"Arial,sans-serif\" font-size=\"8\" font-weight=\"700\" fill=\"#fff\" text-anchor=\"middle\">TEX-MEX DINER<\/text><rect x=\"250\" y=\"112\" width=\"24\" height=\"20\" fill=\"#777\" stroke=\"#333\" stroke-width=\"1\" /><ellipse cx=\"262\" cy=\"108\" rx=\"26\" ry=\"16\" fill=\"url(#c3gl)\"/><path d=\"M249.0,114.0 Q250.1,114.0 251.2,93.6 Q252.7,93.6 254.2,108.4 Q255.0,108.4 255.8,86.9 Q257.6,86.9 259.4,108.0 Q260.5,108.0 261.5,87.8 Q263.1,87.8 264.6,106.3 Q266.8,106.3 269.0,90.1 Q269.4,90.1 269.8,107.0 Q271.3,107.0 272.9,93.4 Q273.9,93.4 275.0,114.0 Z\" fill=\"#ff5a00\" opacity=\".95\"/><path d=\"M252.6,114.0 Q253.3,114.0 254.0,97.0 Q255.2,97.0 256.4,107.6 Q256.6,107.6 256.9,94.6 Q258.5,94.6 260.1,106.8 Q260.7,106.8 261.4,92.0 Q262.6,92.0 263.9,108.2 Q265.4,108.2 266.8,96.3 Q267.2,96.3 267.6,108.8 Q268.1,108.8 268.6,100.4 Q270.0,100.4 271.4,114.0 Z\" fill=\"#ff9a1a\" opacity=\".95\"/><path d=\"M256.3,114.0 Q257.8,114.0 259.4,101.8 Q259.0,101.8 258.6,110.4 Q259.9,110.4 261.3,101.4 Q261.1,101.4 260.9,108.8 Q261.1,108.8 261.4,103.7 Q262.3,103.7 263.1,109.0 Q263.0,109.0 262.9,100.2 Q264.2,100.2 265.4,110.0 Q267.0,110.0 268.5,99.3 Q268.1,99.3 267.7,114.0 Z\" fill=\"#ffd84a\" opacity=\".95\"/><g filter=\"url(#c3bl)\"><circle cx=\"256.4\" cy=\"91.8\" r=\"9.1\" fill=\"#262626\" opacity=\"0.88\"/><circle cx=\"274.7\" cy=\"77.9\" r=\"11.6\" fill=\"#262626\" opacity=\"0.83\"/><circle cx=\"274.9\" cy=\"62.5\" r=\"12.6\" fill=\"#262626\" opacity=\"0.78\"/><circle cx=\"286.7\" cy=\"47.3\" r=\"16.1\" fill=\"#262626\" opacity=\"0.73\"/><circle cx=\"301.1\" cy=\"37.6\" r=\"18.8\" fill=\"#262626\" opacity=\"0.69\"/><circle cx=\"303.6\" cy=\"21.3\" r=\"23.8\" fill=\"#262626\" opacity=\"0.64\"/><circle cx=\"313.7\" cy=\"5.4\" r=\"27.1\" fill=\"#262626\" opacity=\"0.59\"/><circle cx=\"319.9\" cy=\"-9.4\" r=\"28.5\" fill=\"#262626\" opacity=\"0.54\"/><circle cx=\"336.2\" cy=\"-20.9\" r=\"30.4\" fill=\"#262626\" opacity=\"0.49\"/><circle cx=\"337.3\" cy=\"-30.6\" r=\"32.2\" fill=\"#262626\" opacity=\"0.44\"/><\/g><g filter=\"url(#c3bl)\"><circle cx=\"196.1\" cy=\"158.8\" r=\"3.6\" fill=\"#777\" opacity=\"0.50\"/><circle cx=\"203.9\" cy=\"145.1\" r=\"7.7\" fill=\"#777\" opacity=\"0.45\"/><circle cx=\"210.5\" cy=\"141.6\" r=\"9.6\" fill=\"#777\" opacity=\"0.41\"/><circle cx=\"205.7\" cy=\"133.2\" r=\"9.2\" fill=\"#777\" opacity=\"0.36\"/><circle cx=\"213.6\" cy=\"124.6\" r=\"10.7\" fill=\"#777\" opacity=\"0.32\"/><circle cx=\"214.5\" cy=\"109.7\" r=\"13.1\" fill=\"#777\" opacity=\"0.27\"/><\/g><rect x=\"30\" y=\"222\" width=\"40\" height=\"10\" fill=\"#a33\" stroke=\"#222\" stroke-width=\"1\" rx=\"3\"/><rect x=\"38\" y=\"215\" width=\"22\" height=\"8\" fill=\"#a33\" stroke=\"#222\" stroke-width=\"1\" rx=\"3\"/><circle cx=\"39\" cy=\"232\" r=\"4\" fill=\"#111\"/><circle cx=\"61\" cy=\"232\" r=\"4\" fill=\"#111\"/><rect x=\"320\" y=\"222\" width=\"40\" height=\"10\" fill=\"#335\" stroke=\"#222\" stroke-width=\"1\" rx=\"3\"/><rect x=\"328\" y=\"215\" width=\"22\" height=\"8\" fill=\"#335\" stroke=\"#222\" stroke-width=\"1\" rx=\"3\"/><circle cx=\"329\" cy=\"232\" r=\"4\" fill=\"#111\"/><circle cx=\"351\" cy=\"232\" r=\"4\" fill=\"#111\"/><\/svg>", "irr": "Westcom, Engine 1 on location of a medium one-story commercial restaurant with fire showing from the roof exhaust duct and light smoke from the front door, side Alpha. Engine 1 is going offensive, pulling a 1-3/4\" line to the kitchen. Captain Engine 1 will be Market Street Command in fast-attack mode. Continue all units. Truck 1, roof to check the duct and exhaust fan.", "notes": ["Fire from the exhaust duct usually starts in the hood and grease duct. Make sure the hood suppression has gone off.", "Shut off the gas to the cooking line.", "Lunchtime with an open restaurant: confirm everyone is out and do a quick search."], "ask": "Where did this fire most likely start, and what do you shut off?"}];
+const DRILLS = [{"n": 1, "c": "SCBA and PPE", "t": "Beat the clock: full PPE", "d": "From standing, don full turnouts, hood, helmet and gloves. Officer checks collar up, hood seal, and no exposed skin.", "s": "Full PPE in 60 seconds or less with no gaps."}, {"n": 2, "c": "SCBA and PPE", "t": "SCBA on air", "d": "From the seat or the floor, don the SCBA and go on air, PPE already on.", "s": "On air in 60 seconds or less, PASS on, straps snug."}, {"n": 3, "c": "SCBA and PPE", "t": "SCBA daily check, out loud", "d": "Each member walks through the SCBA check aloud: cylinder full, low-air alarm, PASS, regulator, facepiece seal, straps.", "s": "Every step named in order; anything out of service is tagged and reported."}, {"n": 4, "c": "SCBA and PPE", "t": "Low-air alarm and exit", "d": "Blacked-out facepiece. On the officer's call the member reports low air, calls the exit, and follows the hose line out by touch.", "s": "Correct radio report and the right direction on the coupling (smooth to bumps)."}, {"n": 5, "c": "SCBA and PPE", "t": "Emergency bottle swap", "d": "Two members swap a cylinder on a partner who stays packed up, without dropping the regulator from the face.", "s": "Swap done in under 2 minutes with no air loss to the wearer."}, {"n": 6, "c": "SCBA and PPE", "t": "Face piece fog and seal", "d": "Practice a negative-pressure seal check, then clear a fogged mask without breaking the seal.", "s": "Each member shows a good seal and explains when to exit for a bad mask."}, {"n": 7, "c": "SCBA and PPE", "t": "Entangled", "d": "Hang a loop of cord or wire around the SCBA. Wearer, eyes closed, finds it, swims through or cuts it with their own cutter.", "s": "Free in under 60 seconds; everyone can name where their cutter is."}, {"n": 8, "c": "SCBA and PPE", "t": "Reduced profile", "d": "Wearer loosens the shoulder strap and slides the pack to the side to pass between two chairs set 18 inches apart.", "s": "Passes through without losing the regulator or the line."}, {"n": 9, "c": "SCBA and PPE", "t": "PASS awareness", "d": "Officer silently activates a PASS somewhere in the bay. Crew locates it by sound with eyes closed.", "s": "Located in under 2 minutes; crew talks about how sound bounces."}, {"n": 10, "c": "SCBA and PPE", "t": "PPE inspection", "d": "Members inspect each other's turnouts: thermal liner, reflective trim, Velcro, knee and hood damage.", "s": "Any defect is written up for repair that shift."}, {"n": 11, "c": "Hose and nozzles", "t": "Crosslay pull and flake", "d": "Pull the 1-3/4\" crosslay to a set door and flake it so it charges without kinks.", "s": "Charged line at the door in under 90 seconds with no kinks."}, {"n": 12, "c": "Hose and nozzles", "t": "Name that nozzle", "d": "Hand each member a nozzle off the rig: name it, its flow, its pressure, and which line it rides on. Use the Pump Chart Ref tab to check.", "s": "Every nozzle on the rig named with GPM and PDP."}, {"n": 13, "c": "Hose and nozzles", "t": "Coupling by feel", "d": "Eyes closed, members find a coupling on the line and tell which way is out (smooth to bumps, male toward the fire).", "s": "Right direction every time."}, {"n": 14, "c": "Hose and nozzles", "t": "Kink patrol", "d": "One member advances a charged line around a corner while the second clears kinks and feeds hose.", "s": "Line never drops below working pressure; door person stays at the corner."}, {"n": 15, "c": "Hose and nozzles", "t": "Hose roll race", "d": "Two members roll and pack a section of 1-3/4\" (straight roll and donut roll).", "s": "Both rolls done right in under 2 minutes."}, {"n": 16, "c": "Hose and nozzles", "t": "Replace a burst length", "d": "Simulate a burst. Crew shuts down at the gate, adds a section, and recharges.", "s": "Line back in service in under 2 minutes, with clear radio traffic."}, {"n": 17, "c": "Hose and nozzles", "t": "Stairwell stretch", "d": "Stretch a dry line up the station stairs using the well or a loop to save hose.", "s": "Correct amount of hose at the landing with no tangles."}, {"n": 18, "c": "Hose and nozzles", "t": "Smooth bore vs fog", "d": "Flow both (if a hydrant or water source is available) or demo the patterns. Discuss when each fits.", "s": "Members can explain reach, steam and air movement for each."}, {"n": 19, "c": "Hose and nozzles", "t": "High-rise pack", "d": "Shoulder a high-rise or standpipe bundle and walk it to the stair door; connect to a standpipe outlet or a mock one.", "s": "Connected with the gate opened slowly and the kit complete."}, {"n": 20, "c": "Hose and nozzles", "t": "Wye it", "d": "Put a gated wye on a supply and stretch two short lines off it.", "s": "Both lines charged; members explain pressure for each."}, {"n": 21, "c": "Pump operations", "t": "Pump the crosslay", "d": "Engine operator engages the pump and sets the PDP for a 200' crosslay from the Pump Chart.", "s": "Correct PDP within 10 psi, called back to the officer."}, {"n": 22, "c": "Pump operations", "t": "Tank to hydrant", "d": "Switch from tank water to a hydrant supply without losing pressure on the attack line.", "s": "Smooth change, tank-to-pump closed after the intake pressure is up."}, {"n": 23, "c": "Pump operations", "t": "PDP math, no app", "d": "Officer gives a hose lay and nozzle. Members work out the PDP on paper using friction loss and elevation, then check with the Pump Chart.", "s": "Within 10 psi of the chart."}, {"n": 24, "c": "Pump operations", "t": "Relief valve and governor", "d": "Engine operator demonstrates setting the relief valve or pressure governor and what happens when a line shuts down.", "s": "Explains pressure spikes and how the setting protects the crew."}, {"n": 25, "c": "Pump operations", "t": "Draft check", "d": "Walk through the drafting steps at the engine: hard suction, strainer, primer, and signs of a good draft.", "s": "Steps in order; crew can name three signs of air leaks."}, {"n": 26, "c": "Pump operations", "t": "Cavitation signs", "d": "Discuss and point out the gauges: what cavitation looks and sounds like, and the fix.", "s": "Each member names two signs and two fixes."}, {"n": 27, "c": "Pump operations", "t": "Panel walkthrough", "d": "Newest member names every gauge, valve and switch on the pump panel.", "s": "All controls named correctly."}, {"n": 28, "c": "Pump operations", "t": "Foam line", "d": "Set up foam on a line (or simulate): proportion, check eductor or system, flow.", "s": "Correct percentage for the fuel and the right nozzle pressure."}, {"n": 29, "c": "Pump operations", "t": "Water left?", "d": "Officer gives a flow and the tank size. Crew figures how many minutes of tank water they have.", "s": "Correct within a minute; everyone knows the engine's tank size."}, {"n": 30, "c": "Pump operations", "t": "Pump failure", "d": "Simulate a pump failure with a crew inside. Crew calls it and explains the backup plan.", "s": "Correct radio call and a second water source named."}, {"n": 31, "c": "Water supply", "t": "Hydrant hook-up", "d": "Hydrant person wraps the hydrant, makes the connections, and opens it on the operator's signal.", "s": "Under 60 seconds after the engine stops, hydrant opened slowly."}, {"n": 32, "c": "Water supply", "t": "Forward lay talk-through", "d": "Officer picks an address. Crew talks through the forward lay: where to stop, what to call on the radio.", "s": "Clear plan and radio traffic."}, {"n": 33, "c": "Water supply", "t": "Reverse lay", "d": "Discuss when a reverse lay makes sense and who connects what.", "s": "Every member knows their spot."}, {"n": 34, "c": "Water supply", "t": "Hydrant drop rules", "d": "Review the hydrant drop rules on the Pump Chart Hydrant tab, then quiz each other.", "s": "Every member answers three questions right."}, {"n": 35, "c": "Water supply", "t": "Hydrant flow by color", "d": "Name the NFPA hydrant cap colors and what each flow means.", "s": "All four colors right."}, {"n": 36, "c": "Water supply", "t": "Frozen or broken hydrant", "d": "Simulate a dead hydrant. Crew finds the next one on the map and calls it.", "s": "Next hydrant named in under 2 minutes."}, {"n": 37, "c": "Water supply", "t": "Supply line connections", "d": "Practice connecting LDH (or the supply hose) to the intake, with the intake valve and bleeder.", "s": "Connections tight, bleeder used before opening."}, {"n": 38, "c": "Water supply", "t": "Tanker shuttle basics", "d": "Talk through a tanker shuttle: fill site, dump site, and the radio call for water.", "s": "Crew names the parts and the traffic pattern."}, {"n": 39, "c": "Water supply", "t": "Map check", "d": "Using the response map, each member points out three hydrants in first due.", "s": "All hydrants found."}, {"n": 40, "c": "Water supply", "t": "Static source", "d": "Name the drafting spots in the district (ponds, tanks) and how to reach them.", "s": "At least two named."}, {"n": 41, "c": "Ladders", "t": "24' extension raise", "d": "Two-person flat raise of the 24' ladder to a window or the station wall.", "s": "Under 60 seconds, locks set, correct climbing angle."}, {"n": 42, "c": "Ladders", "t": "Climbing angle check", "d": "Set the angle by the stand-under method. Check with the angle indicator.", "s": "75 degrees every time."}, {"n": 43, "c": "Ladders", "t": "Lock in", "d": "Climb to the window, lock in with a leg lock, and work with both hands.", "s": "Correct leg locked in, hands free."}, {"n": 44, "c": "Ladders", "t": "Ladder carry", "d": "Practice the suitcase and shoulder carries for each ground ladder.", "s": "Smooth carry and calls; ends hit the target spot."}, {"n": 45, "c": "Ladders", "t": "Roof ladder placement", "d": "Talk through the roof ladder: carry up, hooks out, set on the ridge.", "s": "Steps in order with safety calls."}, {"n": 46, "c": "Ladders", "t": "Rescue from a ladder", "d": "Use a mannequin or a member (safely) to simulate bringing a victim down a ladder.", "s": "Rescuer controls the victim with arms and knee."}, {"n": 47, "c": "Ladders", "t": "Ladder inspection", "d": "Inspect each ground ladder: rungs, halyard, pawls, beams, heat sensor label.", "s": "Defects tagged and reported."}, {"n": 48, "c": "Ladders", "t": "Where does the ladder go?", "d": "Officer shows a building photo. Members say where ladders go for rescue, egress and vent.", "s": "Every member places two ladders and says why."}, {"n": 49, "c": "Ladders", "t": "Tip and heel", "d": "Heel the ladder for a climber, then tie it off.", "s": "Ladder stays put; correct heeling position."}, {"n": 50, "c": "Ladders", "t": "Ladder count", "d": "Every member names each ladder on the rig, its length and its spot.", "s": "All named."}, {"n": 51, "c": "Forcible entry and tools", "t": "Irons check", "d": "Inspect and name the irons and the halligan's parts: adze, pick, fork.", "s": "Parts named; tool clean and sharp."}, {"n": 52, "c": "Forcible entry and tools", "t": "Inward door", "d": "Use a prop or a door frame to practice gap, set and force on an inward-opening door.", "s": "Steps called out and done in order."}, {"n": 53, "c": "Forcible entry and tools", "t": "Outward door", "d": "Practice the outward door with the adze end.", "s": "Correct tool end and placement."}, {"n": 54, "c": "Forcible entry and tools", "t": "Through the lock", "d": "Talk through or practice the K-tool or A-tool on a lock cylinder.", "s": "Member names the right key tool."}, {"n": 55, "c": "Forcible entry and tools", "t": "Tool carry", "d": "Each member grabs the tools for their seat, then explains why.", "s": "Right tools for the seat."}, {"n": 56, "c": "Forcible entry and tools", "t": "Window breaking", "d": "Talk through breaking a window: stand upwind, hands above, clear the frame.", "s": "Safe position; frame fully cleared."}, {"n": 57, "c": "Forcible entry and tools", "t": "Saw start", "d": "Start and check the rotary saw and the chainsaw. Check the fuel, chain and blade.", "s": "Started safely in two pulls, PPE on."}, {"n": 58, "c": "Forcible entry and tools", "t": "Lock-out/lock-in check", "d": "Check every compartment lock on the rig works, and every tool is mounted.", "s": "All secure, anything broken reported."}, {"n": 59, "c": "Forcible entry and tools", "t": "Gate and padlock", "d": "Practice cutting or breaking a padlock or a chain (on a prop).", "s": "Right tool chosen and used safely."}, {"n": 60, "c": "Forcible entry and tools", "t": "Through the wall", "d": "Talk through breaching a wall for escape: find studs, make a hole between them.", "s": "Every member can explain it."}, {"n": 61, "c": "Search and rescue", "t": "Right-hand search", "d": "Blacked-out masks. Member searches a room with a right-hand pattern and returns to the door.", "s": "Back to the door in under 2 minutes."}, {"n": 62, "c": "Search and rescue", "t": "Victim drag", "d": "Drag a mannequin or a member 30 feet with a sheet or a webbing drag.", "s": "Smooth drag; victim's head protected."}, {"n": 63, "c": "Search and rescue", "t": "Downed firefighter", "d": "Two members drag a packed-up firefighter by the SCBA strap.", "s": "Drag 30 feet in under 60 seconds."}, {"n": 64, "c": "Search and rescue", "t": "Search line", "d": "Set up and follow a search line in the bay.", "s": "Line tied off; each member returns to the anchor."}, {"n": 65, "c": "Search and rescue", "t": "Oriented search", "d": "One member stays at the door as the anchor, the other searches the room.", "s": "Clear talk between the two."}, {"n": 66, "c": "Search and rescue", "t": "Mayday drill", "d": "Member calls a MAYDAY with LUNAR (location, unit, name, assignment, resources).", "s": "Clear MAYDAY in the right order, with no delay."}, {"n": 67, "c": "Search and rescue", "t": "RIT bag", "d": "Check and stage the RIT bag; practice the emergency air connection.", "s": "Air connected in under 2 minutes."}, {"n": 68, "c": "Search and rescue", "t": "Stairs rescue", "d": "Carry a mannequin down the station stairs with two members.", "s": "Safe carry with good communication."}, {"n": 69, "c": "Search and rescue", "t": "Window rescue", "d": "Talk through or practice getting a victim to a ladder at a window.", "s": "Steps in order."}, {"n": 70, "c": "Search and rescue", "t": "Child search", "d": "Talk through where to search for kids: closets, under beds, toy boxes, bathtubs.", "s": "Every member names four places."}, {"n": 71, "c": "Size-up, fire behavior and radio", "t": "Practice scene", "d": "Open Size-Up Practice in the Field Guide. Each member gives the initial radio report for one scene.", "s": "Report follows the Blue Card IRR order."}, {"n": 72, "c": "Size-up, fire behavior and radio", "t": "360 walk", "d": "Walk around the station as if it were the fire building. Report what you see on each side.", "s": "Each side reported with hazards."}, {"n": 73, "c": "Size-up, fire behavior and radio", "t": "Building construction", "d": "Name the construction types and what each means for collapse.", "s": "Every member names three."}, {"n": 74, "c": "Size-up, fire behavior and radio", "t": "Smoke reading", "d": "Look at a photo or video: volume, velocity, density, color.", "s": "Each member reads one."}, {"n": 75, "c": "Size-up, fire behavior and radio", "t": "Flow path", "d": "Talk through the flow path in a two-story house when a door is opened.", "s": "Everyone can explain the intake and exhaust."}, {"n": 76, "c": "Size-up, fire behavior and radio", "t": "CAN report", "d": "Each member gives a CAN report (conditions, actions, needs).", "s": "Clear report under 20 seconds."}, {"n": 77, "c": "Size-up, fire behavior and radio", "t": "Command transfer", "d": "Officer gives a transfer of command face to face.", "s": "Covers situation, actions, resources and safety."}, {"n": 78, "c": "Size-up, fire behavior and radio", "t": "Radio check", "d": "Radio check, then talk through channel changes and the emergency button.", "s": "Everyone changes the channel without looking."}, {"n": 79, "c": "Size-up, fire behavior and radio", "t": "PAR", "d": "Officer calls for a PAR. Each crew answers.", "s": "Correct format; nobody missed."}, {"n": 80, "c": "Size-up, fire behavior and radio", "t": "Exposure hazards", "d": "Talk through exposures: power lines, propane, nearby houses.", "s": "Each member names two."}, {"n": 81, "c": "EMS", "t": "CPR cycles", "d": "Two minutes of CPR on a manikin with a partner swap.", "s": "Rate 100 to 120, full chest recoil."}, {"n": 82, "c": "EMS", "t": "AED", "d": "Set up the AED trainer, pads on, shock.", "s": "Shock in under 60 seconds."}, {"n": 83, "c": "EMS", "t": "Airway", "d": "Practice OPA and NPA sizing and insertion on a manikin.", "s": "Right size every time."}, {"n": 84, "c": "EMS", "t": "Bleeding control", "d": "Apply a tourniquet on yourself and on a partner.", "s": "On and tight in under 30 seconds."}, {"n": 85, "c": "EMS", "t": "BVM", "d": "Two-person BVM on a manikin with a good seal.", "s": "Chest rise every breath."}, {"n": 86, "c": "EMS", "t": "Patient assessment", "d": "Run the primary assessment out loud.", "s": "All steps in order."}, {"n": 87, "c": "EMS", "t": "Stroke scale", "d": "Practice a stroke scale on a partner.", "s": "All parts named."}, {"n": 88, "c": "EMS", "t": "Spinal motion restriction", "d": "Talk through when to use SMR and practice the c-collar.", "s": "Correct size and fit."}, {"n": 89, "c": "EMS", "t": "Narcan", "d": "Talk through naloxone per your medical protocol: signs of overdose, dose, route, and what to watch after.", "s": "Every member explains it."}, {"n": 90, "c": "EMS", "t": "Lift and carry", "d": "Practice the stair chair or the stretcher.", "s": "Safe lift, good communication."}, {"n": 91, "c": "Hazmat, extrication and safety", "t": "ERG lookup", "d": "Officer gives a UN number. Members find the guide page in the ERG.", "s": "Guide page found in under 60 seconds."}, {"n": 92, "c": "Hazmat, extrication and safety", "t": "Placard ID", "d": "Name the hazard class for the placard colors.", "s": "All classes named."}, {"n": 93, "c": "Hazmat, extrication and safety", "t": "Isolation distance", "d": "Find the isolation distance in the ERG for a given spill.", "s": "Correct distance."}, {"n": 94, "c": "Hazmat, extrication and safety", "t": "Vehicle stabilization", "d": "Talk through cribbing and stabilizing a car on its wheels.", "s": "Steps in order."}, {"n": 95, "c": "Hazmat, extrication and safety", "t": "Glass management", "d": "Talk through tempered vs laminated glass removal.", "s": "Right tool for each."}, {"n": 96, "c": "Hazmat, extrication and safety", "t": "Battery and airbags", "d": "Talk through cutting power and airbag hazards.", "s": "Every member names the hazards."}, {"n": 97, "c": "Hazmat, extrication and safety", "t": "Traffic safety", "d": "Practice apparatus blocking and cone placement.", "s": "Correct block angle."}, {"n": 98, "c": "Hazmat, extrication and safety", "t": "Gas leak", "d": "Talk through a gas leak call: meter, shut off, evacuate.", "s": "Steps in order."}, {"n": 99, "c": "Hazmat, extrication and safety", "t": "CO alarm call", "d": "Run a CO call with the gas meter: bump test, readings, levels.", "s": "Correct action at each level."}, {"n": 100, "c": "Hazmat, extrication and safety", "t": "Fire extinguisher", "d": "Name the types and practice PASS.", "s": "Every member explains each type."}];
+const DRILL_CATS = [...new Set(DRILLS.map(x=>x.c))];
+let drillCat = "all", drillPick = null;
+function drillCard(x, hi){
+  return `<div class="card drill${hi?" drill-hi":""}" id="drill-${x.n}"><div class="card-h"><h3><span class="drill-n">${x.n}</span>${esc(x.t)}</h3></div><div class="card-b"><p>${esc(x.d)}</p><p class="drill-s"><b>Standard:</b> ${esc(x.s)}</p><p class="drill-c">${esc(x.c)}</p></div></div>`;
+}
+function vDrills(){
+  const list = DRILLS.filter(x=>drillCat==="all"||x.c===drillCat);
+  const pick = drillPick && DRILLS.find(x=>x.n===drillPick);
+  return `<section class="view" style="--c:var(--s4)">
+    <a class="sub" href="#home">‹ Home</a>
+    <div class="gh"><h2>5-Minute Drills</h2><span class="sub">${DRILLS.length} drills</span></div>
+    <p class="sub">Quick station-level drills for any crew. Each one runs about five minutes with what's on the rig. Keep safety first: full PPE where it applies, no live fire, and stop if anything looks wrong.</p>
+    <p><button class="btn primary" type="button" data-drand>Pick a random drill</button></p>
+    ${pick?`<div class="drill-pick"><span class="sub">Today's drill</span>${drillCard(pick,true)}</div>`:""}
+    <div class="chips" role="group" aria-label="Drill topic"><button class="chip" type="button" data-dcat="all" aria-pressed="${drillCat==="all"}">All</button>${DRILL_CATS.map(c=>`<button class="chip" type="button" data-dcat="${esc(c)}" aria-pressed="${drillCat===c}">${esc(c)} <small>${DRILLS.filter(x=>x.c===c).length}</small></button>`).join("")}</div>
+    ${list.map(x=>drillCard(x,false)).join("")}
+  </section>`;
+}
+let pracKind = "all"; const pracShown = new Set();
+
+function pracFig(p){ return p.img ? `<img src="${esc(p.img)}" alt="${esc(p.title)}" loading="lazy">` : p.svg; }
+const PRAC_KINDS = [["all","All"],["house","Houses"],["apt","Apartments"],["commercial","Commercial"]];
+function vPractice(){
+  const list = PRACTICE.filter(p=>pracKind==="all"||p.kind===pracKind);
+  return `<section class="view" style="--c:var(--s5)">
+    <a class="sub" href="#sizeup">‹ First-In Size-Up</a>
+    <div class="gh"><h2>Size-Up Practice</h2><span class="sub">${PRACTICE.length} scenes</span></div>
+    <p class="sub">Look at the scene, give your initial radio report out loud, then check it against the sample.</p>
+    <div class="chips" role="group" aria-label="Building type">${PRAC_KINDS.map(([k,l])=>`<button class="chip" type="button" data-pkind="${k}" aria-pressed="${pracKind===k}">${l}</button>`).join("")}</div>
+    <div class="prac-grid">${list.map(p=>`<a class="prac-tile" href="#practice-${p.id}"><span class="prac-fig">${pracFig(p)}</span><b>${esc(p.title)}</b><small>${esc(p.info)}</small></a>`).join("")}</div>
+  </section>`;
+}
+function vPracticeScene(id){
+  const i = PRACTICE.findIndex(p=>p.id===id); const p = PRACTICE[i];
+  if (!p) return vPractice();
+  const prev = PRACTICE[(i-1+PRACTICE.length)%PRACTICE.length], next = PRACTICE[(i+1)%PRACTICE.length];
+  const shown = pracShown.has(id);
+  const steps = ["Westcom, Engine [#] on location","Building: size, stories, occupancy","Problem: what is showing, and where","Action: offensive or defensive, and your first line","Command: name and mode","Resources: hold, continue or request more"];
+  return `<section class="view" style="--c:var(--s5)">
+    <a class="sub" href="#practice">‹ All practice scenes</a>
+    <div class="gh"><h2>${esc(p.title)}</h2><span class="sub">${i+1} of ${PRACTICE.length}</span></div>
+    <div class="prac-big">${pracFig(p)}</div>
+    <div class="card prac-card"><div class="card-b body"><p><b>Dispatch:</b> ${esc(p.info)}</p><p><b>Think about it:</b> ${esc(p.ask)}</p></div></div>
+    <div class="card prac-card"><div class="card-h"><h3>Your report, in order</h3></div><div class="card-b body"><ol class="prac-steps">${steps.map(t=>`<li>${fill(esc(t).replace("[#]","<span class=\"fillin\">#</span>"))}</li>`).join("")}</ol></div></div>
+    ${shown ? `<div class="card prac-card"><div class="card-h"><h3>Sample report</h3></div><div class="card-b body"><div class="say"><span class="mic" aria-hidden="true"></span><span>${esc(p.irr)}</span></div><h4 class="prac-h4">Things to notice</h4><ul>${p.notes.map(n=>`<li>${esc(n)}</li>`).join("")}</ul></div></div>`
+      : `<button class="btn primary prac-show" type="button" data-pshow="${esc(id)}">Show a sample report</button>`}
+    <div class="prac-nav"><a class="btn" href="#practice-${prev.id}">‹ Previous</a><a class="btn" href="#practice-${next.id}">Next ›</a></div>
+  </section>`;
+}
+function vSizeup(){
+  const sec = store.sections.find(s=>s.area==="sizeup");
+  const all = sec ? itemsOf(sec.id) : [];
+  const tags = [...new Set(all.map(i=>i.tag||"Prompts"))];
+  if (!tags.includes(sizeTag)) sizeTag = tags[0] || null;
+  const items = all.filter(i=>(i.tag||"Prompts")===sizeTag);
+  const head = `<div class="gh"><h2>First-In Size-Up</h2>${all.length?`<button class="btn sm" type="button" data-act="clear-checks">Clear checks</button>`:""}</div>`;
+  if (!store.ready) return `<section class="view">${head}${storeNotice()}</section>`;
+  return `<section class="view" style="--c:var(--s5)">${head}
+    ${sec&&sec.blurb?`<p class="sub">${inline(sec.blurb)}</p>`:""}
+    <a class="prac-banner" href="#practice"><span class="prac-fig">${pracFig(PRACTICE[0])}</span><span><b>Size-Up Practice</b><small>${PRACTICE.length} scenes: houses, apartments, commercial. Give your report, then check it.</small></span><span class="chev">›</span></a>
+    <p class="sub">Work top to bottom. Tap a line when you've covered it on the radio. <span class="fillin">Highlighted</span> words are what you fill in.</p>
+    ${tags.length>1?`<div class="chips" role="group" aria-label="Method">${tags.map(t=>`<button class="chip" type="button" data-tag="${esc(t)}" aria-pressed="${t===sizeTag}">${esc(t)}</button>`).join("")}</div>`:""}
+    ${(()=>{ let step = 0; return items.map(it=>{ const isEx = /example/i.test(it.title), isTip = /tip/i.test(it.title); const nb = (it.body.match(/^- /gm)||[]).length; const done = [...Array(nb).keys()].filter(i=>checked.has(it.id+":"+i)).length; const badge = isEx ? "EX" : isTip ? "TIP" : String(++step);
+      return `<div class="card su${isEx?" ex":""}${isTip?" tip":""}"><div class="card-h"><span class="stepn">${badge}</span><h3>${esc(it.title)}</h3>${nb&&!isEx&&!isTip?`<span class="sub cnt">${done}/${nb}</span>`:""}${editBtns("items",it.id)}</div><div class="card-b body">${renderBody(it.body, it.id, !isEx&&!isTip)}${it.sog?`<p class="src">Source: ${inline(it.sog)}</p>`:""}</div></div>`; }).join(""); })() || `<div class="empty">No size-up prompts yet.</div>`}
+    ${editing&&sec?`<button class="btn" type="button" data-act="new-item" data-sec="${sec.id}">+ Add prompt card</button>`:""}
+    ${editing&&!sec?`<button class="btn" type="button" data-act="new-sizeup">Set up size-up section</button>`:""}
+  </section>`;
+}
+function vTraining(){
+  const cats = store.sections.filter(s=>s.area==="training");
+  return `<section class="view">
+    <div class="gh"><h2>Fire Training Division</h2></div>
+    ${storeNotice() || (cats.length?`<div class="list">${cats.map(c=>`<a class="row-btn" href="#cat-${esc(c.id)}" style="--c:var(--s4)"><span class="n">${itemsOf(c.id).length}</span><span class="m"><b>${esc(c.title)}</b><small>${esc(c.blurb||"")}</small></span><span class="chev">›</span></a>${editing?`<div style="padding:0 14px 10px">${editBtns("sections",c.id)}</div>`:""}`).join("")}</div>`:`<div class="empty">No categories yet.</div>`)}
+    ${editing?`<button class="btn" type="button" data-act="new-cat">+ Add category</button>`:""}
+  </section>`;
+}
+function vCat(id){
+  const c = store.sections.find(s=>s.id===id);
+  if (!store.ready) return storeNotice();
+  if (!c) return `<div class="empty">That category was removed. <a class="btn sm" href="#training">Training</a></div>`;
+  const allItems = itemsOf(id);
+  const tagged = allItems.some(i=>i.tag);
+  const ctabs = tagged ? [...new Set(allItems.map(i=>i.tag||"Overview"))] : [];
+  if (tagged && !ctabs.includes(catTag)) catTag = ctabs[0];
+  const items = tagged ? allItems.filter(i=>(i.tag||"Overview")===catTag) : allItems;
+  return `<section class="view" style="--c:var(--s4)">
+    <a class="sub" href="${c.area==="suppression"?"#home":"#training"}">‹ ${c.area==="suppression"?"Home":"Training Division"}</a>
+    <div class="doc-h"><span class="num">${c.area==="suppression"?"Fire Suppression":"Training category"}</span><h1>${esc(c.title)}</h1>${c.blurb?`<span class="meta">${esc(c.blurb)}</span>`:""}</div>
+    ${editing?editBtns("sections",c.id):""}
+    ${tagged?`<div class="chips" role="tablist" aria-label="Subtabs">${ctabs.map(t=>`<button class="chip" type="button" role="tab" data-cattag="${esc(t)}" aria-pressed="${t===catTag}" aria-selected="${t===catTag}">${esc(t)}</button>`).join("")}</div>`:""}
+    ${vBookBar(id, tagged?catTag:"")}
+    ${items.length?`<div class="list">${items.map(it=>`<a class="row-btn" href="#item-${esc(it.id)}"><span class="n">${itemCount(it)}</span><span class="m"><b>${esc(it.title)}</b><small>${esc((it.body||"").replace(/^- \[( |_|\d{1,2})\] /gm,"").replace(/^[#>-]\s/gm,"").split("\n").find(Boolean)||"")}</small></span><span class="chev">›</span></a>`).join("")}</div>`:`<div class="empty">Nothing in this category yet.${canEdit&&!editing?" Turn on Edit to add lesson plans, drills, links or notes.":""}</div>`}
+    ${editing?`<button class="btn" type="button" data-act="new-item" data-sec="${c.id}">+ Add item</button>`:""}
+  </section>`;
+}
+
+function vRankChart(){
+  const R = [
+    ["Probationary Firefighter","Learn the job under supervision; skills sign-offs","6 months","ff","Start here"],
+    ["Firefighter","Respond, maintain apparatus, provide EMS","","ff",""],
+    ["Engine Operator","Drive and pump the apparatus, lead daily ops, fill in for Lt","","ff",""],
+    ["Lieutenant","Run the shift, train personnel, fill in for Captain","","off",""],
+    ["Captain","Station command, policy, personnel management","","off",""],
+    ["Battalion Chief","Multi-station oversight, recruiting, budget, equipment","","off",""],
+    ["Deputy Chief","Logistics, Special Ops, Volunteers","Command staff","cs",""],
+    ["Assistant Chief","Operations, Administration or EMS; planning and policy","Command staff","cs",""],
+    ["Fire Chief","Leads the department, strategy, budget, outside relations","Command staff","cs","Top"]];
+  const arrow = `<div class="bf-arrow" aria-hidden="true"></div>`;
+  const flow = R.map(([rk,focus,pay,band,tag],i)=>`${i?arrow:""}<div class="bf-node bf-${band}">${tag?`<span class="bf-tag">${tag}</span>`:""}<b>${esc(rk)}</b><small>${esc(focus)}</small>${pay?`<em>${esc(pay)}</em>`:""}</div>`).join("");
+  const paid = [["Apply to Duty Crew","Part time or full time; pass the PAT and interview"],["Complete NEOP","New Employee Orientation Program"],["Station + probation","Assigned a station; 6-month probation"],["BC recommends: E/O","Battalion Chief letter of recommendation when ready for Engine Operator"],["BC recommends: officer","After E/O, BC letter to the Training Division to start officer development: Lieutenant, Captain or higher"]];
+  const vol = [["Enter","Certified Volunteer or Cadet (see Volunteer entry)"],["Station + probation","Assigned a station; 6 months as a Probationary Firefighter"],["Show up","Calls, drills, meetings, training hours"],["Captain recommends: E/O","Station Captain letter of recommendation when ready for Engine Operator"],["Captain recommends: officer","After E/O, Station Captain letter to the Training Division to start officer development: Lieutenant, Captain or higher"]];
+  const ventry = [["Certified Volunteer","Holds a fire certification from a certified SFFMA or TCFP academy"],["Cadet","Applies, passes the PAT, then attends the in-house SFFMA academy"]];
+  const vmerge = `<svg class="bf-split" viewBox="0 0 200 40" preserveAspectRatio="none" aria-hidden="true"><path d="M50 0 C50 20 100 20 100 40" class="bf-l-vol"/><path d="M150 0 C150 20 100 20 100 40" class="bf-l-vol"/></svg>`;
+  const vladder = ["Probationary Firefighter|6 months","Firefighter","Engine Operator","Lieutenant","Captain","Battalion Chief and up"].map((r,i)=>{const [t,d]=r.split("|");return `${i?arrow:""}<div class="bf-node bf-${i>2?"off":"ff"}"><b>${esc(t)}</b>${d?`<em>${esc(d)}</em>`:""}</div>`;}).join("");
+  const col = (list,cls) => list.map(([t,d],i)=>`${i?`<div class="bf-arrow bf-sm" aria-hidden="true"></div>`:""}<div class="bf-node bf-step ${cls}"><span class="bf-num">${i+1}</span><b>${esc(t)}</b><small>${esc(d)}</small></div>`).join("");
+  const split = `<svg class="bf-split" viewBox="0 0 200 40" preserveAspectRatio="none" aria-hidden="true"><path d="M100 0 C100 20 50 20 50 40" class="bf-l-paid"/><path d="M100 0 C100 20 150 20 150 40" class="bf-l-vol"/></svg>`;
+  const merge = `<svg class="bf-split" viewBox="0 0 200 40" preserveAspectRatio="none" aria-hidden="true"><path d="M50 0 C50 20 100 20 100 40" class="bf-l-paid"/><path d="M150 0 C150 20 100 20 100 40" class="bf-l-vol"/></svg>`;
+  const cmp = [["Entry","Duty Crew (part time or full time): apply, PAT, interview, NEOP","Certified Volunteer (SFFMA or TCFP cert) or Cadet (PAT + in-house SFFMA academy)"],["Probation","6 months at an assigned station","6 months as Probationary Firefighter"],["To Engine Operator","BC letter of recommendation","Station Captain letter of recommendation"],["To officer","BC letter to Training Division, then officer development","Station Captain letter to Training Division, then officer development"],["Time","Scheduled shifts","M\u2013F 6 PM\u20136 AM; 24 hrs weekends and holidays"],["Key to moving up","Readiness, evaluations, BC recommendation","Readiness, participation, Station Captain recommendation"]];
+  return `<div class="rk">
+    <p class="sub">Every rank, what it takes to move up, and how the paid and volunteer paths differ. From the CVFD Suppression job-responsibility sheets and the published Command Staff.</p>
+    <div class="rk-sec" id="rk-ladder" data-toc="Rank flow"><h2 class="rk-h">Rank flow</h2>
+      <div class="bf-legend"><span class="bf-ff">Firefighter ranks</span><span class="bf-off">Officers</span><span class="bf-cs">Command staff</span></div>
+      <div class="bf-flow">${flow}</div>
+    </div>
+    <div class="rk-sec" id="rk-vol" data-toc="Volunteer entry"><h2 class="rk-h">Volunteer entry</h2>
+      <p class="sub">Two ways in. Both lead to six months as a Probationary Firefighter, then up the same ladder.</p>
+      <div class="bf-cols">${ventry.map(([t,d],i)=>`<div class="bf-col"><div class="bf-node bf-step bf-vol"><span class="bf-num">${i?"B":"A"}</span><b>${esc(t)}</b><small>${esc(d)}</small></div></div>`).join("")}</div>
+      ${vmerge}
+      <div class="bf-flow">${vladder}</div>
+    </div>
+    <div class="rk-sec" id="rk-paths" data-toc="How to move up"><h2 class="rk-h">How to move up</h2>
+      <div class="bf-node bf-start"><b>You, at your current rank</b></div>
+      ${split}
+      <div class="bf-cols"><div class="bf-col"><div class="bf-ph bf-paid">Paid duty crew</div>${col(paid,"bf-paid")}</div><div class="bf-col"><div class="bf-ph bf-vol">Volunteer</div>${col(vol,"bf-vol")}</div></div>
+      ${merge}
+      <div class="bf-node bf-start bf-end"><b>Next rank</b><small>Probation or a period of proving yourself, then repeat</small></div>
+    </div>
+    <div class="rk-sec" id="rk-cmp" data-toc="Paid vs volunteer"><h2 class="rk-h">Paid vs volunteer</h2>
+      <table class="rk-tbl"><thead><tr><th></th><th>Paid duty crew</th><th>Volunteer</th></tr></thead><tbody>${cmp.map(r=>`<tr><th>${esc(r[0])}</th><td>${esc(r[1])}</td><td>${esc(r[2])}</td></tr>`).join("")}</tbody></table>
+    </div>
+    <div class="rk-sec" id="rk-know" data-toc="Good to know"><h2 class="rk-h">Good to know</h2>
+      <ul><li>CVFD is a combination department: paid and volunteer members staff stations 24 hours a day.</li><li>Higher ranks often require Fire Officer I and/or II.</li><li>Higher ranks add policy, personnel management (evaluations, discipline), equipment and budget oversight.</li><li>Talk with your Station Captain and the Training Division to build a training plan that maps out your goals for growing with the department.</li><li>Moving up starts with a letter of recommendation: from your Battalion Chief on duty crew, or your Station Captain as a volunteer. First a letter for Engine Operator, then a letter to the Training Division for officer development.</li></ul>
+    </div>
+  </div>`;
+}
+function vItem(id){
+  if (!store.ready) return storeNotice();
+  const it = store.items.find(i=>i.id===id);
+  if (!it) return `<div class="empty">That item was removed. <a class="btn sm" href="#training">Training</a></div>`;
+  const c = store.sections.find(s=>s.id===it.section);
+  return `<section class="view" style="--c:var(--s4)">
+    <a class="sub" href="${c&&c.area==="sizeup"?"#sizeup":c&&c.area==="academy"?"#class-"+esc(it.section):"#cat-"+esc(it.section)}">‹ ${esc(c?c.title:"Back")}</a>
+    <div class="doc-h"><span class="num">${esc(c?c.title:"")}</span><h1>${esc(it.title)}</h1></div>
+    ${editBtns("items",it.id)}
+    ${tasksIn(it).length?vBookBar(it.section, tagOf(it)):""}
+    ${(()=>{ const bh = it.chart==="rank" ? vRankChart() : renderBody(it.body, it.id, false, {bk: me.books[bookKey(it.section, tagOf(it))]}); return `${tocFor(bh)}<div class="doc body" data-keep>${bh||`<p class="sub">No notes yet.</p>`}`; })()}
+      ${it.sog?`<p class="src">Policy: ${inline(it.sog)}</p>`:""}
+      ${it.url?`<p><a class="btn sm" href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.urlLabel||"Open link")} ↗</a></p>`:""}
+    </div>
+  </section>`;
+}
+function vTools(){
+  return `<section class="view">
+    <div class="gh"><h2>Department Tools</h2></div>
+    ${MODE==="td"?"":`<div class="tiles"><a class="tile" href="${PUMP_CHART}" style="--c:var(--s2)"><b>Pump Chart</b><span>Crosslays, PDP builder, friction loss, hydrants</span></a></div>`}
+    <p class="sub">These open in a new tab. Sign in with your own account for each one.</p>
+    ${storeNotice() || vToolTiles()}
+    ${editing&&store.tools.length?`<div class="list">${store.tools.map(t=>`<div class="row-btn" style="cursor:default"><span class="n">↗</span><span class="m"><b>${esc(t.name)}</b><small>${esc(t.url)}</small></span>${editBtns("tools",t.id)}</div>`).join("")}</div>`:""}
+    ${editing?`<button class="btn" type="button" data-act="new-tool">+ Add tool link</button>`:""}
+  </section>`;
+}
+
+function classesList(){ return store.sections.filter(s=>s.area==="academy"); }
+function vClassTiles(){
+  const cl = classesList();
+  if (!cl.length) return `<div class="empty">No academy classes yet.${canEdit?" Open the Academy tab and turn on Edit to add one.":""}</div>`;
+  return `<div class="tiles">${cl.map(c=>`<a class="tile" href="#class-${esc(c.id)}" style="--c:var(--red)"><b>${esc(c.title)}</b><span>${esc(c.blurb||"")}</span></a>`).join("")}</div>`;
+}
+function vAcademy(){
+  const cl = classesList();
+  return `<section class="view">
+    <div class="gh"><h2>CVFD Fire Academy</h2></div>
+    <p class="sub">Each class has its own syllabus, schedule and reference material.</p>
+    ${storeNotice() || (cl.length?`<div class="list">${cl.map(c=>`<a class="row-btn" href="#class-${esc(c.id)}" style="--c:var(--red)"><span class="n">${itemsOf(c.id).length}</span><span class="m"><b>${esc(c.title)}</b><small>${esc(c.blurb||"")}</small></span><span class="chev">›</span></a>${editing?`<div style="padding:0 14px 10px">${editBtns("sections",c.id)}</div>`:""}`).join("")}</div>`:`<div class="empty">No academy classes yet.${canEdit&&!editing?" Turn on Edit to add the first class.":""}</div>`)}
+    ${editing?`<button class="btn" type="button" data-act="new-class">+ Add academy class</button>`:""}
+  </section>`;
+}
+const CLASS_TABS = ["Syllabus","Schedule"];
+function vClass(id){
+  if (!store.ready) return storeNotice();
+  const c = store.sections.find(s=>s.id===id);
+  if (!c) return `<div class="empty">That class was removed. <a class="btn sm" href="#academy">Academy</a></div>`;
+  const all = itemsOf(id);
+  const tabs = [...new Set([...CLASS_TABS, ...all.map(i=>i.tag||"Other")])];
+  if (!tabs.includes(classTag)) classTag = tabs[0];
+  const items = all.filter(i=>(i.tag||"Other")===classTag);
+  return `<section class="view" style="--c:var(--red)">
+    <a class="sub" href="#academy">‹ CVFD Fire Academy</a>
+    <div class="doc-h"><span class="num">Academy class</span><h1>${esc(c.title)}</h1>${c.blurb?`<span class="meta">${esc(c.blurb)}</span>`:""}</div>
+    ${editing?editBtns("sections",c.id):""}
+    <div class="chips" role="tablist" aria-label="Class sections">${tabs.map(t=>`<button class="chip" type="button" role="tab" data-ctag="${esc(t)}" aria-pressed="${t===classTag}" aria-selected="${t===classTag}">${esc(t)} <small>${all.filter(i=>(i.tag||"Other")===t).length||""}</small></button>`).join("")}</div>
+    ${items.map(it=>`<div class="card"><div class="card-h"><h3>${esc(it.title)}</h3>${editBtns("items",it.id)}</div><div class="card-b body">${renderBody(it.body, it.id, false)}${it.sog?`<p class="src">Policy: ${inline(it.sog)}</p>`:""}${it.url?`<p><a class="btn sm" href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.urlLabel||"Open link")} ↗</a></p>`:""}</div></div>`).join("") || `<div class="empty">Nothing under ${esc(classTag)} yet.${canEdit&&!editing?" Turn on Edit to add it.":""}</div>`}
+    ${editing?`<button class="btn" type="button" data-act="new-item" data-sec="${c.id}">+ Add to ${esc(classTag)}</button>`:""}
+    ${editing?`<p class="sub">To make a new subtab, add an item and type a new subtab name, like Roster, Skills Sheets or Uniform.</p>`:""}
+  </section>`;
+}
+function vCkMoved(){
+  return `${cadreNav("")}<div class="empty"><b>The Weekly Check-In has its own app now.</b> All past weeks moved over with it.<p><a class="btn" href="${CK_APP}" target="_blank" rel="noopener">Open Cadre Check-In ↗</a></p></div>`;
+}
+function vCadreGate(){
+  if (!authKnown) return `<p class="sub">Checking access…</p>`;
+  return `<div class="empty"><b>Training Division staff only.</b> The Cadre check-in is visible to people the guide's owner has given Editor access.</div>`;
+}
+
+// ---------- router ----------
+function route(){
+  const h = (location.hash||"#home").slice(1);
+  let html, tab = "home";
+  let m;
+  if (h==="sogs") { html = vSogList(); tab="sogs"; }
+  else if ((m = h.match(/^sog-(\d{3})(?:-(\d{2}))?$/))) { html = vSog(m[1], m[2]); tab="sogs"; }
+  else if (MODE==="guide" && (/^(training|academy|me|roster|cadre|td)$/.test(h) || /^(class|member|td|tddoc)-/.test(h) || ((m = h.match(/^cat-(.+)$/)) && store.sections.find(s=>s.id===m[1]&&s.area!=="suppression")) || ((m = h.match(/^item-(.+)$/)) && (it => it && store.sections.find(s=>s.id===it.section&&(s.area==="training"||s.area==="academy")))(store.items.find(i=>i.id===m[1]))))) { html = vMoved(); tab="home"; }
+  else if (MODE==="td" && (h==="sizeup" || h==="tools")) { html = `<section class="view"><div class="empty">That lives in the CVFD Field Guide.<br><br><a class="btn primary" href="${GUIDE_APP}" target="_blank" rel="noopener">Open CVFD Field Guide ↗</a></div></section>`; }
+  else if (h==="sizeup") { html = vSizeup(); tab="sizeup"; }
+  else if (h==="drills" && MODE!=="td") { html = vDrills(); tab="home"; }
+  else if (h==="practice") { html = vPractice(); tab="sizeup"; }
+  else if ((m = h.match(/^practice-(.+)$/))) { html = vPracticeScene(m[1]); tab="sizeup"; }
+  else if (h==="training") { html = vTraining(); tab="training"; }
+  else if ((m = h.match(/^cat-(.+)$/))) { html = vCat(m[1]); const cs = store.sections.find(s=>s.id===m[1]); tab = cs&&cs.area==="suppression"?"home":"training"; }
+  else if ((m = h.match(/^item-(.+)$/))) { const it = store.items.find(i=>i.id===m[1]); const sec = it && store.sections.find(s=>s.id===it.section); html = vItem(m[1]); tab = sec&&sec.area==="sizeup"?"sizeup":sec&&sec.area==="academy"?"academy":sec&&sec.area==="suppression"?"home":"training"; }
+  else if (h==="tools") { html = vTools(); tab = MODE==="guide"?"tools":"home"; }
+  else if (h==="academy") { html = vAcademy(); tab="academy"; }
+  else if ((m = h.match(/^class-(.+)$/))) { html = vClass(m[1]); tab="academy"; }
+  else if (h==="me") { html = vMe(); tab="home"; }
+  else if (h==="td") { html = vTd(); tab="cadre"; }
+  else if ((m = h.match(/^tddoc-(.+)$/))) { html = vTdDoc(m[1]); tab="cadre"; }
+  else if ((m = h.match(/^td-(.+)$/))) { html = vTdTable(m[1]); tab="cadre"; }
+  else if (h==="roster") { html = vRoster(); tab="cadre"; }
+  else if ((m = h.match(/^member-(.+)$/))) { html = vMember(m[1]); tab="cadre"; }
+  else if (h==="cadre") { html = canEdit ? (APP ? "" : vCkMoved()) : vCadreGate(); tab="cadre"; }
+  else html = vHome();
+  document.querySelectorAll("nav.tabs a").forEach(a=>a.toggleAttribute("aria-current", a.dataset.tab===tab) || a.removeAttribute("aria-current"));
+  document.querySelectorAll("nav.tabs a").forEach(a=>{ if(a.dataset.tab===tab) a.setAttribute("aria-current","page"); });
+  return {html, h, m};
+}
+function render(){
+  const active = document.activeElement && document.activeElement.id;
+  const caret = active && document.activeElement.selectionStart;
+  const {html, h, m} = route();
+  const showCadre = APP && h==="cadre" && canEdit;
+  $("#cadre-view").hidden = !showCadre; view.hidden = showCadre;
+  if (showCadre && !cadreStarted && cadreCtx) { cadreStarted = true; try { initCadre(cadreCtx); } catch(err) { console.error(err); } }
+  view.innerHTML = html;
+  if (active && (active==="sog-q"||active==="home-q"||active==="td-q")) { const el = $("#"+active); if (el) { el.focus(); try{ el.setSelectionRange(caret,caret); }catch(e){} } }
+  if (h !== lastHash) {
+    lastHash = h;
+    const mm = h.match(/^sog-(\d{3})-(\d{2})$/);
+    const target = mm && document.getElementById("s-"+mm[1]+"-"+mm[2]);
+    if (target) target.scrollIntoView({block:"start"});
+    else if (h.startsWith("sog-") && lastHighlight) { const mk = view.querySelector(".doc mark"); mk ? mk.scrollIntoView({block:"center"}) : window.scrollTo(0,0); }
+    else window.scrollTo(0,0);
+  }
+}
+function takeTagFromHash(){
+  const mt = location.hash.match(/^#cat-([^~]+)~(.+)$/);
+  if (mt) { catTag = decodeURIComponent(mt[2]); history.replaceState(null, "", "#cat-"+mt[1]); }
+}
+window.addEventListener("hashchange", () => { if (!location.hash.startsWith("#sog-")) lastHighlight = ""; takeTagFromHash(); render(); });
+takeTagFromHash();
+
+// ---------- events ----------
+view.addEventListener("input", e => {
+  if (e.target.id==="sog-q") { sogQuery = e.target.value; const rows = $("#sog-rows"); render(); }
+  if (e.target.id==="home-q") { sogQuery = e.target.value; }
+  if (e.target.id==="td-q") { td.q = e.target.value; render(); }
+});
+view.addEventListener("keydown", e => {
+  if (e.target.id==="home-q" && e.key==="Enter") { e.preventDefault(); location.hash = "#sogs"; setTimeout(()=>{ const q=$("#sog-q"); q&&q.focus(); },0); }
+});
+view.addEventListener("change", e => {
+  const t = e.target;
+  if (t.dataset.task) { setCheck(t.dataset.item, t.dataset.task, t.checked ? {d: today(), by:""} : null); return; }
+  if (t.dataset.ini) { setBookText(t.dataset.item, "ini", t.dataset.ini, t.value.trim()); return; }
+  if (t.dataset.field) { setBookText(t.dataset.item, "field", t.dataset.field, t.value.trim()); return; }
+  if (e.target.matches(".chk input")) {
+    const k = e.target.dataset.k; e.target.checked ? checked.add(k) : checked.delete(k);
+    try { sessionStorage.setItem("sizeup-checked", JSON.stringify([...checked])); } catch(err) {}
+    if (location.hash==="#sizeup") render();
+  }
+});
+view.addEventListener("click", e => {
+  const a = e.target.closest("a[data-hl]"); if (a) { lastHighlight = sogQuery.trim() && !/^\d/.test(sogQuery.trim()) ? sogQuery : ""; }
+  const kt = e.target.closest("[data-cattag]"); if (kt) { catTag = kt.dataset.cattag; render(); return; }
+  const ct = e.target.closest("[data-ctag]"); if (ct) { classTag = ct.dataset.ctag; render(); return; }
+  const tg = e.target.closest("[data-tag]"); if (tg) { sizeTag = tg.dataset.tag; render(); return; }
+  const dcat = e.target.closest("[data-dcat]"); if (dcat) { drillCat = dcat.dataset.dcat; render(); return; }
+  if (e.target.closest("[data-drand]")) { const pool = DRILLS.filter(x=>drillCat==="all"||x.c===drillCat); let p; do { p = pool[Math.floor(Math.random()*pool.length)].n; } while (pool.length>1 && p===drillPick); drillPick = p; render(); window.scrollTo({top:0}); return; }
+  const pk = e.target.closest("[data-pkind]"); if (pk) { pracKind = pk.dataset.pkind; render(); return; }
+  const ps = e.target.closest("[data-pshow]"); if (ps) { pracShown.add(ps.dataset.pshow); render(); return; }
+  const chip = e.target.closest("[data-series]"); if (chip) { sogFilter = chip.dataset.series; render(); return; }
+  const jump = e.target.closest("[data-jump]"); if (jump) { const t = document.getElementById(jump.dataset.jump); t && t.scrollIntoView({block:"start"}); return; }
+  const ot = e.target.closest("[data-ot]"); if (ot) { const bk = me.books[bookKey(...secTagOf(ot.dataset.item))]; const cur = bk && bk.checks && bk.checks[ot.dataset.ot]; const next = !cur ? "O" : cur.ot==="O" ? "T" : null; setCheck(ot.dataset.item, ot.dataset.ot, next ? {d: today(), ot: next} : null); return; }
+  const tde = e.target.closest("[data-td-edit]"); if (tde) { e.preventDefault(); const r = (td.rows[tde.dataset.tdEdit]||[]).find(x=>x.id===tde.dataset.id); if (r) openTdEditor(tde.dataset.tdEdit, r); return; }
+  const tdn = e.target.closest("[data-td-new]"); if (tdn) { openTdEditor(tdn.dataset.tdNew, {}); return; }
+  const tdr = e.target.closest("[data-td-review]"); if (tdr) { db.collection("td").doc("main").set({...(td.main||{}), lastReview: today()}).then(()=>toast("Review recorded"), ()=>toast("Could not save.")); return; }
+  const rv = e.target.closest("[data-review]"); if (rv) { rv.disabled = true; db.collection("members").doc(rv.dataset.review).update({reviewedAt: nowIso()}).then(()=>toast("Marked reviewed"), ()=>{ rv.disabled=false; toast("Could not save."); }); return; }
+  const sb = e.target.closest("[data-start-book]"); if (sb) { startBook(sb.dataset.startBook, sb.dataset.tag).then(()=>render()); return; }
+  const yr = e.target.closest("[data-year]"); if (yr) { hoursYear = +yr.dataset.year; render(); return; }
+  const dh = e.target.closest("[data-del-hours]"); if (dh) { delHours(dh.dataset.delHours); return; }
+  const dc = e.target.closest("[data-del-cert]"); if (dc) { delCert(dc.dataset.delCert); return; }
+  const b = e.target.closest("[data-act]"); if (!b) return;
+  const act = b.dataset.act, kind = b.dataset.kind, id = b.dataset.id;
+  if (act==="clear-checks") { checked.clear(); try{ sessionStorage.removeItem("sizeup-checked"); }catch(err){} render(); return; }
+  if (act==="up"||act==="down") return move(kind, id, act==="up"?-1:1);
+  if (act==="edit") return openEditor(kind, store[kind].find(x=>x.id===id));
+  if (act==="new-cat") return openEditor("sections", {area:"training"});
+  if (act==="new-class") return openEditor("sections", {area:"academy"});
+  if (act==="new-supp") return openEditor("sections", {area:"suppression"});
+  if (act==="new-item") { const sec = store.sections.find(s=>s.id===b.dataset.sec); return openEditor("items", {section:b.dataset.sec, tag: sec&&sec.area==="academy" ? classTag||"" : sec&&sec.area==="sizeup" ? sizeTag||"" : (itemsOf(sec.id).some(i=>i.tag) ? catTag||"" : "")}); }
+  if (act==="new-tool") return openEditor("tools", {});
+  if (act==="new-sizeup") return save("sections", null, {area:"sizeup", title:"First-In Size-Up", blurb:"", order:0});
+});
+view.addEventListener("submit", async e => {
+  const f = e.target; if (!["pf","hf","cf"].includes(f.id)) return;
+  e.preventDefault();
+  const vals = Object.fromEntries([...f.querySelectorAll("input,select,textarea")].filter(el=>el.id).map(el=>[el.id, String(el.value||"").trim()]));
+  const v = id => vals[id] || "";
+  const btn = f.querySelector("button[type=submit]"); if (btn) btn.disabled = true;
+  try {
+    await ensureMe();
+    if (f.id==="pf") {
+      await meRef().update({name:v("pf-name"), rank:v("pf-rank"), station:v("pf-station"), empId:v("pf-empId"), designation:v("pf-designation")||"Firefighter"});
+      me.doc = {...me.doc, designation:v("pf-designation")}; await saveIsoSummary(); await touch("Updated profile"); toast("Profile saved");
+    } else if (f.id==="hf") {
+      const hrs = parseFloat(v("hf-hours")); if (!(hrs>0)) { toast("Enter the hours"); return; }
+      const rec = {date:v("hf-date")||today(), cat:v("hf-cat"), hours:Math.round(hrs*100)/100, note:v("hf-note"), added:today(), addedAt:nowIso()};
+      const ref = await meRef().collection("hours").add(rec);
+      if (!me.hours.some(h=>h.id===ref.id)) me.hours = [{id:ref.id, ...rec}, ...me.hours];
+      hoursYear = +rec.date.slice(0,4) || hoursYear; await saveIsoSummary(); await touch(`Logged ${rec.hours} hrs (${(ISO_CATS.find(c=>c[0]===rec.cat)||[,rec.cat])[1]})`); f.reset(); toast("Hours added");
+    } else {
+      const rec = {name:v("cf-name"), number:v("cf-number"), issued:v("cf-issued"), expires:v("cf-expires"), added:today(), addedAt:nowIso()};
+      if (!rec.name) return;
+      await meRef().collection("certs").add(rec); await touch("Added certification: "+rec.name, {certs: certSummary([...me.certs.filter(c=>c.name!==rec.name||c.number!==rec.number), rec])}); f.reset(); toast("Certification added");
+    }
+    pendingRender = false; render();
+  } catch(err) { toast("Could not save. Ask the Training Division for access that lets you use the guide."); }
+  finally { if (btn) btn.disabled = false; }
+});
+$("#edit-toggle").addEventListener("click", () => {
+  editing = !editing; $("#edit-toggle").setAttribute("aria-pressed", editing); $("#edit-flag").hidden = !editing; render();
+});
+
+// ---------- editing ----------
+function siblings(kind, rec){
+  if (kind==="sections") return store.sections.filter(s=>s.area===rec.area);
+  if (kind==="items") return store.items.filter(i=>i.section===rec.section);
+  return store.tools;
+}
+async function move(kind, id, dir){
+  const rec = store[kind].find(x=>x.id===id); if (!rec) return;
+  const sib = siblings(kind, rec); const i = sib.indexOf(rec); const other = sib[i+dir]; if (!other) return;
+  try {
+    // normalize orders, then swap
+    for (let k=0;k<sib.length;k++) if (sib[k].order!==k) await db.collection(kind).doc(sib[k].id).update({order:k});
+    await db.collection(kind).doc(rec.id).update({order:i+dir});
+    await db.collection(kind).doc(other.id).update({order:i});
+  } catch(err) { toast("Could not reorder. Only editors can change the guide."); }
+}
+async function save(kind, id, data){
+  try {
+    if (id) await db.collection(kind).doc(id).update(data);
+    else { const sib = siblings(kind, data); data.order = sib.length ? Math.max(...sib.map(s=>s.order??0))+1 : 0; await db.collection(kind).add(data); }
+    toast("Saved"); return true;
+  } catch(err) { toast("Could not save. Only editors can change the guide."); return false; }
+}
+async function remove(kind, rec){
+  try {
+    if (kind==="sections") for (const it of itemsOf(rec.id)) await db.collection("items").doc(it.id).delete();
+    await db.collection(kind).doc(rec.id).delete(); toast("Deleted"); return true;
+  } catch(err) { toast("Could not delete."); return false; }
+}
+function openEditor(kind, rec){
+  const isNew = !rec.id;
+  const fields = kind==="sections" && rec.area!=="academy" ? [["title","Category name","text",""],["blurb","Short description","text","Shows under the name"]]
+    : kind==="sections" && rec.area==="academy" ? [["title","Class name","text","e.g. Academy Class 26-01"],["blurb","Dates or note","text","e.g. Jan 12 to May 30, 2026"]]
+    : kind==="tools" ? [["name","Tool name","text",""],["url","Sign-in link","url","Paste your department's own login address"],["note","Note","text","Optional, e.g. what members use it for"]]
+    : [["title","Title","text",""],...(store.sections.find(x=>x.id===rec.section)?.area==="sizeup"?[["tag","Method","text","Cards with the same method show together, e.g. KISS or Blue Card IRR"]]:store.sections.find(x=>x.id===rec.section)?.area==="academy"?[["tag","Subtab","text","Syllabus, Schedule, or a new subtab name"]]:[["tag","Subtab","text","Optional. Items with the same subtab name are grouped together."]]),["body","Content","area","One line per point. Start a line with - for a bullet, - [ ] for a trackable task, - [3] for a task that needs 3 performances, - [_] for a fill-in field, # for a heading, > for a radio example. Type a SOG number like 303.02 to link it."],["sog","SOG reference","text","Optional, e.g. 226.03"],["url","Link","url","Optional: a video, slide deck or form"],["urlLabel","Link button text","text","Optional"]];
+  const label = kind==="sections"?(rec.area==="academy"?"academy class":"category"):kind==="tools"?"tool link":"item";
+  const sh = $("#sheet"), inner = sh.firstElementChild;
+  inner.innerHTML = `<h2 id="sheet-title">${isNew?"Add":"Edit"} ${label}</h2>
+    <form id="ed-form" class="group">${fields.map(([k,l,t,hint])=>`<label class="field"><span>${l}</span>${t==="area"?`<textarea id="ed-${k}" name="${k}">${esc(rec[k]||"")}</textarea>`:`<input id="ed-${k}" name="${k}" type="${t}" value="${esc(rec[k]||"")}" ${k==="title"||k==="name"?"required":""}>`}${hint?`<small>${esc(hint)}</small>`:""}</label>`).join("")}
+    <div class="actions">${isNew?"":`<button class="btn danger" type="button" id="ed-del">Delete</button>`}<span style="flex:1"></span><button class="btn" type="button" id="ed-cancel">Cancel</button><button class="btn primary" type="submit">Save</button></div></form>`;
+  sh.hidden = false; const first = inner.querySelector("input,textarea"); first && first.focus();
+  const close = () => { sh.hidden = true; inner.innerHTML = ""; };
+  $("#ed-cancel").onclick = close;
+  sh.onclick = e => { if (e.target===sh) close(); };
+  const del = $("#ed-del");
+  if (del) del.onclick = async () => {
+    if (del.dataset.armed!=="1") { del.dataset.armed="1"; del.textContent = kind==="sections" ? `Tap again to delete with ${itemsOf(rec.id).length} items` : "Tap again to delete"; return; }
+    if (await remove(kind, rec)) { close(); if (kind==="sections") location.hash = rec.area==="academy" ? "#academy" : rec.area==="suppression" ? "#home" : "#training"; else if (location.hash==="#item-"+rec.id) history.back(); }
+  };
+  $("#ed-form").onsubmit = async e => {
+    e.preventDefault();
+    const data = {}; for (const [k] of fields) data[k] = $("#ed-"+k).value.trim();
+    if (kind==="sections") data.area = rec.area; if (kind==="items") data.section = rec.section;
+    if (data.url && !/^https?:\/\//i.test(data.url) && !/^[\w\-. ]+\.(pdf|docx?|pptx?)$/i.test(data.url)) data.url = "https://"+data.url;
+    if (await save(kind, rec.id, data)) close();
+  };
+}
+document.addEventListener("keydown", e => { if (e.key==="Escape" && !$("#sheet").hidden) $("#ed-cancel")?.click(); });
+render();
+</script>

@@ -1,0 +1,38 @@
+rules_version = '2';
+// Mirrors the claude.ai apps: everyone signed in reads content; Training Division staff
+// (role cadre or admin) edit it; members read and write only their own record.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function role() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role : 'none';
+    }
+    function staff() { return role() in ['cadre', 'admin']; }
+    function admin() { return role() == 'admin'; }
+
+    // Accounts. A new account can only make itself a member; only an admin changes roles.
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || staff());
+      allow create: if signedIn() && request.auth.uid == uid && request.resource.data.role == 'member';
+      allow update: if admin()
+        || (signedIn() && request.auth.uid == uid && request.resource.data.role == resource.data.role);
+      allow delete: if signedIn() && (request.auth.uid == uid || admin());
+    }
+
+    // Field Guide and Training content.
+    match /sections/{id} { allow read: if signedIn(); allow write: if staff(); }
+    match /items/{id}    { allow read: if signedIn(); allow write: if staff(); }
+    match /tools/{id}    { allow read: if signedIn(); allow write: if staff(); }
+
+    // Cadre only: weekly check-in and TD master dashboard.
+    match /weeks/{rest=**} { allow read, write: if staff(); }
+    match /td/{rest=**}    { allow read, write: if staff(); }
+
+    // Member training records: the member and staff.
+    match /members/{uid} {
+      allow read, write: if signedIn() && (request.auth.uid == uid || staff());
+      match /{sub}/{doc} { allow read, write: if signedIn() && (request.auth.uid == uid || staff()); }
+    }
+  }
+}
