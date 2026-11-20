@@ -121,6 +121,8 @@ select:focus-visible,input:focus-visible{outline:3px solid var(--ink);outline-of
 .result .bd{margin-left:auto;font-size:12px;line-height:1.35;text-align:right;opacity:.85;font-variant-numeric:tabular-nums}
 .breakdown{display:flex;flex-direction:column}
 .breakdown div{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+.lbl{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.tips{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px;font-size:15px;line-height:1.4}
 .breakdown div:last-child{border-bottom:0;font-weight:600}
 .breakdown span:last-child{font-family:var(--display);font-size:20px;font-weight:600}
 
@@ -173,8 +175,15 @@ footer{font-size:12px;color:var(--muted)}
       <div class="card-b">
         <div class="col" id="b-segs"></div>
         <button class="btn wide" id="b-add" type="button">+ Add hose</button>
+        <p class="sub">Sections here are added end to end as one line. For a second line off the pump, use Lines flowing below instead.</p>
       </div>
     </div>
+    <div class="card"><div class="card-b">
+      <div class="field"><span>Lines flowing</span>
+        <div class="stepper"><button class="btn" type="button" data-step="lines" data-d="-1" aria-label="One fewer line">−</button><output id="b-lines">1</output><button class="btn" type="button" data-step="lines" data-d="1" aria-label="One more line">+</button></div>
+        <p class="sub">Identical lines off the pump: same hose, length, nozzle and flow. Each line gets the same PDP. Total flow goes up.</p>
+      </div>
+    </div></div>
     <div class="card"><div class="card-b">
       <div class="field"><span>Appliances in line</span>
         <div class="stepper"><button class="btn" type="button" data-step="app" data-d="-1" aria-label="Fewer appliances">−</button><output id="b-app">0</output><button class="btn" type="button" data-step="app" data-d="1" aria-label="More appliances">+</button></div>
@@ -189,6 +198,10 @@ footer{font-size:12px;color:var(--muted)}
       <div class="card-h"><div><h3>Breakdown</h3><p id="b-sum"></p></div></div>
       <div class="card-b"><div class="breakdown" id="b-break"></div><div class="col" id="b-warn"></div></div>
     </div>
+    <details class="card" id="b-multi"><summary>
+      <div class="card-h"><div><h3>Pumping more than one line</h3><p>Governor, gating and water supply</p></div><span class="chev" aria-hidden="true">›</span></div></summary>
+      <div class="card-b" id="b-multi-b"></div>
+    </details>
     <button class="btn wide" id="b-reset" type="button">Start over</button>
   </section>
 
@@ -385,9 +398,13 @@ $("#plate").addEventListener("click",e=>{
 });
 
 // ---------- build tab ----------
-const DEFAULT_BUILD = {noz:"h1516", np:50, gpm:185, segs:[{hose:"175", len:200}], app:0, floors:0};
+const DEFAULT_BUILD = {noz:"h1516", np:50, gpm:185, segs:[{hose:"175", len:200}], app:0, floors:0, lines:1};
+// Textbook friction loss coefficients for FL = C × (gpm/100)² × (length/100). No standard C for 2-1/4".
+const TEXTBOOK_C = {"175":15.5, "25":2, "3":0.8, "5":0.08};
+const TANKS = [500, 750];
 let B; try{ B = JSON.parse(store.get("build")) }catch(e){}
 if(!B || !Array.isArray(B.segs)) B = structuredClone(DEFAULT_BUILD);
+if(!B.lines) B.lines = 1;
 const saveB = () => store.set("build", JSON.stringify(B));
 
 function initBuild(){
@@ -410,9 +427,14 @@ function calcBuild(){
   const appFL = B.app*appEach;
   const elev = B.floors*5;
   const pdp = np + hoseFL + appFL + elev;
+  const lines = Math.min(4, Math.max(1, Number(B.lines)||1));
+  const totalGpm = gpm*lines;
+  const textbookFL = segs.every(s=>TEXTBOOK_C[s.h.id]!=null) ? segs.reduce((a,s)=>a+TEXTBOOK_C[s.h.id]*(gpm/100)**2*s.len/100,0) : null;
+  if(segs.some((s,i)=>i>0 && s.h.id===segs[i-1].h.id && s.len===segs[i-1].len))
+    warns.push(`Two hose sections the same size and length are added end to end here, as one ${segs.reduce((a,s)=>a+s.len,0)}' line. If you mean two separate lines, remove one section and set Lines flowing to 2.`);
   if(segs.some(s=>s.how==="between")) warns.push("Some friction loss falls between chart rows, so it is figured in a straight line between them.");
   if(pdp>250) warns.push("PDP is over 250 psi. Check the lay before pumping it.");
-  return {gpm,np,segs,hoseFL,appEach,appFL,elev,pdp:Math.max(0,pdp),warns};
+  return {gpm,np,segs,hoseFL,appEach,appFL,elev,pdp:Math.max(0,pdp),warns,lines,totalGpm,textbookFL};
 }
 function renderBuild(){
   $("#b-noz").value = B.noz;
@@ -422,6 +444,7 @@ function renderBuild(){
   $("#b-nozhint").textContent = (p&&p[5]) || "Change psi or gpm to match what you are flowing.";
   $("#b-app").textContent = B.app;
   $("#b-floors").textContent = B.floors;
+  $("#b-lines").textContent = B.lines;
   const c = calcBuild();
   const sizeOpts = cur => HOSES.map(h=>`<option value="${h.id}" ${h.id===cur?"selected":""}>${esc(h.label)} ${esc(h.name)}</option>`).join("");
   $("#b-segs").innerHTML = B.segs.map((s,i)=>{
@@ -442,11 +465,36 @@ function renderBuild(){
     ["PDP", r0(c.pdp)]
   ];
   $("#b-break").innerHTML = rows.map(r=>`<div><span>${esc(r[0])}</span><span>${r[1]} psi</span></div>`).join("");
-  $("#b-sum").textContent = `${c.gpm} gpm through ${B.segs.reduce((a,s)=>a+s.len,0)}' of hose`;
-  $("#b-warn").innerHTML = c.warns.map(w=>`<p class="warn">${esc(w)}</p>`).join("");
+  $("#b-sum").textContent = `${c.gpm} gpm through ${B.segs.reduce((a,s)=>a+s.len,0)}' of hose`+(c.lines>1?` · ${c.lines} lines, ${c.totalGpm} gpm total`:"");
+  const pdp=r0(c.pdp);
+  const check = c.textbookFL!=null && Math.abs(c.textbookFL-c.hoseFL)>=10
+    ? `<p class="note">Check the ${pdp}. This uses the CVFD chart: ${r0(c.hoseFL)} psi friction loss for this lay. The old textbook formula (C × Q² × L) gives about ${r0(c.textbookFL)} psi, or ${r0(c.pdp-c.hoseFL+c.textbookFL)} PDP. If ${pdp} is from your department's chart for low-friction hose, you're fine. If it isn't, check it against a flow test.</p>` : "";
+  $("#b-warn").innerHTML = c.warns.map(w=>`<p class="warn">${esc(w)}</p>`).join("") + check;
+  $("#b-multi-b").innerHTML = renderMulti(c);
   $("#r-pdp").textContent = r0(c.pdp);
-  $("#r-bd").innerHTML = `${c.np} NP + ${r0(c.hoseFL)} FL${B.app?` + ${c.appFL} app`:""}${B.floors?` ${c.elev<0?"−":"+"} ${Math.abs(c.elev)} elev`:""}<br>${c.gpm} gpm`;
+  $("#r-bd").innerHTML = `${c.np} NP + ${r0(c.hoseFL)} FL${B.app?` + ${c.appFL} app`:""}${B.floors?` ${c.elev<0?"−":"+"} ${Math.abs(c.elev)} elev`:""}<br>${c.lines>1?`${c.lines} × ${c.gpm} = ${c.totalGpm}`:c.gpm} gpm${c.lines>1?" total":""}`;
   saveB();
+}
+const mins = m => m>=10 ? r0(m) : (Math.round(m*10)/10).toString();
+function renderMulti(c){
+  const pdp=r0(c.pdp);
+  const tank = c.totalGpm>0 ? TANKS.map(g=>`${g} gal in about ${mins(g/c.totalGpm)} min`).join(", ") : "";
+  return `<div class="lbl">Identical lines</div>
+  <ul class="tips">
+    <li>Same hose, length, nozzle and flow: pressure mode holds the discharge pressure. When you open the next line, the governor raises the RPM on its own to keep the pump at ${pdp} psi. Each identical line gets ${pdp}, so you don't touch it.</li>
+  </ul>
+  <div class="lbl">Different lines</div>
+  <ul class="tips">
+    <li>The governor holds one pressure for the whole pump. Build each line here to get its own PDP.</li>
+    <li>If the new line needs less pressure, gate its discharge valve down and watch that line's own gauge.</li>
+    <li>If it needs more, raise the governor to the highest line's pressure, then gate the lower line back down to its number.</li>
+  </ul>
+  <div class="lbl">Watch your water</div>
+  <ul class="tips">
+    <li>${c.lines>1?`${c.lines} lines × ${c.gpm} gpm flow ${c.totalGpm} gpm.`:`One line flows ${c.gpm} gpm. Two flow ${c.gpm*2} gpm.`}</li>
+    ${tank?`<li>On tank water at ${c.totalGpm} gpm, a tank empties fast: ${tank}.</li>`:""}
+    <li>On a hydrant, keep intake pressure at 20 psi or above as the RPM climbs.</li>
+  </ul>`;
 }
 $("#b-noz").addEventListener("change",e=>{
   const p=PRESETS.find(x=>x[0]===e.target.value); B.noz=p[0]; B.np=p[3]; B.gpm=p[4]; renderBuild();
@@ -465,6 +513,7 @@ document.querySelector('[data-view="build"]').addEventListener("click",e=>{
   const k=b.dataset.step, d=Number(b.dataset.d);
   if(k==="app") B.app=Math.min(6,Math.max(0,B.app+d));
   if(k==="floors") B.floors=Math.min(100,Math.max(-10,B.floors+d));
+  if(k==="lines"){ B.lines=Math.min(4,Math.max(1,B.lines+d)); $("#b-multi").open = B.lines>1; }
   renderBuild();
 });
 
@@ -549,7 +598,7 @@ function route(){
   document.body.classList.toggle("building", v==="build");
 }
 window.addEventListener("hashchange",()=>{route(); window.scrollTo(0,0)});
-initBuild(); initHydrant();
+initBuild(); initHydrant(); $("#b-multi").open = B.lines>1;
 renderPump(); renderBuild(); renderFL(); renderRef(); route();
 </script>
 
