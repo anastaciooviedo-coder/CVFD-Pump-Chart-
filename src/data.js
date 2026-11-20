@@ -103,6 +103,10 @@ export function flPer100(hose, gpm) {
   }
 }
 
+// Textbook friction loss coefficients for FL = C × (gpm/100)² × (length/100). No standard C for 2-1/4".
+export const TEXTBOOK_C = { 175: 15.5, 25: 2, 3: 0.8, 5: 0.08 };
+export const TANKS = [500, 750];
+
 export function calcBuild(b) {
   const gpm = Math.max(0, Number(b.gpm) || 0), np = Math.max(0, Number(b.np) || 0);
   const warns = [];
@@ -119,9 +123,16 @@ export function calcBuild(b) {
   const appFL = b.app * appEach;
   const elev = b.floors * 5;
   const pdp = np + hoseFL + appFL + elev;
+  const lines = Math.min(4, Math.max(1, Number(b.lines) || 1));
+  const totalGpm = gpm * lines;
+  const textbookFL = segs.every((s) => TEXTBOOK_C[s.h.id] != null)
+    ? segs.reduce((a, s) => a + (TEXTBOOK_C[s.h.id] * (gpm / 100) ** 2 * s.len) / 100, 0) : null;
+  if (segs.some((s, i) => i > 0 && s.h.id === segs[i - 1].h.id && s.len === segs[i - 1].len)) {
+    warns.push(`Two hose sections the same size and length are added end to end here, as one ${segs.reduce((a, s) => a + s.len, 0)}' line. If you mean two separate lines, remove one section and set Lines flowing to 2.`);
+  }
   if (segs.some((s) => s.how === 'between')) warns.push('Some friction loss falls between chart rows, so it is figured in a straight line between them.');
   if (pdp > 250) warns.push('PDP is over 250 psi. Check the lay before pumping it.');
-  return { gpm, np, segs, hoseFL, appEach, appFL, elev, pdp: Math.max(0, pdp), warns };
+  return { gpm, np, segs, hoseFL, appEach, appFL, elev, pdp: Math.max(0, pdp), warns, lines, totalGpm, textbookFL };
 }
 
 export function hydrantVerdict(S, R) {

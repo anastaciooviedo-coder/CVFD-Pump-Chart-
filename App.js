@@ -3,13 +3,14 @@ import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import {
-  CHART_ORDER, COLORS, FL_GPM, FRICTION, HOSES, HYDRANTS, LINES, NOZZLES, PRESETS, REF, RESIDUALS, STATIONS, calcBuild, hydrantVerdict,
+  CHART_ORDER, COLORS, FL_GPM, FRICTION, HOSES, HYDRANTS, LINES, NOZZLES, PRESETS, REF, RESIDUALS, STATIONS, TANKS, calcBuild, hydrantVerdict,
 } from './src/data';
 
 const LIGHT = { bg: '#eef0f1', panel: '#ffffff', ink: '#15191c', muted: '#5c656c', line: '#d3d8dc', plate: '#1d2328', plateInk: '#f4f6f7', hi: '#fff3a6', hiInk: '#3a3200', warn: '#9a3412', warnBg: '#ffedd5' };
 const DARK = { bg: '#101315', panel: '#1a1f23', ink: '#eef1f3', muted: '#9aa4ab', line: '#2c3439', plate: '#262d33', plateInk: '#f4f6f7', hi: '#4a4210', hiInk: '#fff3a6', warn: '#fdba74', warnBg: '#431407' };
 const TABS = [['pump', 'Pump'], ['build', 'Build'], ['friction', 'Friction'], ['hydrant', 'Hydrant'], ['ref', 'Ref']];
-const DEFAULT_BUILD = { noz: 'h1516', np: 50, gpm: 185, segs: [{ hose: '175', len: 200 }], app: 0, floors: 0 };
+const DEFAULT_BUILD = { noz: 'h1516', np: 50, gpm: 185, segs: [{ hose: '175', len: 200 }], app: 0, floors: 0, lines: 1 };
+const mins = (m) => (m >= 10 ? String(Math.round(m)) : String(Math.round(m * 10) / 10));
 const r0 = (n) => Math.round(n);
 
 export default function App() {
@@ -43,7 +44,7 @@ export default function App() {
               <Text style={[s.resultUnit, { color: t.plateInk }]}>PSI PDP</Text>
             </View>
             <Text style={[s.resultBd, { color: t.plateInk }]}>
-              {`${calc.np} NP + ${r0(calc.hoseFL)} FL${build.app ? ` + ${calc.appFL} app` : ''}${build.floors ? ` ${calc.elev < 0 ? '−' : '+'} ${Math.abs(calc.elev)} elev` : ''}\n${calc.gpm} gpm`}
+              {`${calc.np} NP + ${r0(calc.hoseFL)} FL${build.app ? ` + ${calc.appFL} app` : ''}${build.floors ? ` ${calc.elev < 0 ? '−' : '+'} ${Math.abs(calc.elev)} elev` : ''}\n${calc.lines > 1 ? `${calc.lines} × ${calc.gpm} = ${calc.totalGpm} gpm total` : `${calc.gpm} gpm`}`}
             </Text>
           </View>
         )}
@@ -159,6 +160,15 @@ function NumField({ t, label, value, onChange }) {
   );
 }
 
+function Tip({ t, children }) {
+  return (
+    <View style={{ flexDirection: 'row', gap: 8 }}>
+      <Text style={{ color: t.ink, fontSize: 15 }}>•</Text>
+      <Text style={{ color: t.ink, fontSize: 15, lineHeight: 21, flex: 1 }}>{children}</Text>
+    </View>
+  );
+}
+
 function Panel({ t, title, subtitle, children }) {
   return (
     <View style={[s.card, { backgroundColor: t.panel, borderColor: t.line }]}>
@@ -227,6 +237,12 @@ function Build({ t, b, setB, c }) {
           </View>
         ))}
         <Btn t={t} label="+ ADD HOSE" onPress={() => up({ segs: [...b.segs, { hose: b.segs[b.segs.length - 1]?.hose || '175', len: 100 }] })} />
+        <Text style={[s.small, { color: t.muted }]}>Sections here are added end to end as one line. For a second line off the pump, use Lines flowing below instead.</Text>
+      </Panel>
+      <Panel t={t}>
+        <Text style={[s.fieldLbl, { color: t.muted }]}>LINES FLOWING</Text>
+        <Stepper t={t} value={c.lines} what="lines" onMinus={() => up({ lines: Math.max(1, c.lines - 1) })} onPlus={() => up({ lines: Math.min(4, c.lines + 1) })} />
+        <Text style={[s.small, { color: t.muted }]}>Identical lines off the pump: same hose, length, nozzle and flow. Each line gets the same PDP. Total flow goes up.</Text>
       </Panel>
       <Panel t={t}>
         <Text style={[s.fieldLbl, { color: t.muted }]}>APPLIANCES IN LINE</Text>
@@ -236,7 +252,7 @@ function Build({ t, b, setB, c }) {
         <Stepper t={t} value={b.floors} what="floors" onMinus={() => up({ floors: Math.max(-10, b.floors - 1) })} onPlus={() => up({ floors: Math.min(100, b.floors + 1) })} />
         <Text style={[s.small, { color: t.muted }]}>5 psi per floor. Go below 0 for lines below grade.</Text>
       </Panel>
-      <Panel t={t} title="Breakdown" subtitle={`${c.gpm} gpm through ${b.segs.reduce((a, x) => a + x.len, 0)}' of hose`}>
+      <Panel t={t} title="Breakdown" subtitle={`${c.gpm} gpm through ${b.segs.reduce((a, x) => a + x.len, 0)}' of hose${c.lines > 1 ? ` · ${c.lines} lines, ${c.totalGpm} gpm total` : ''}`}>
         {rows.map((r, i) => (
           <View key={i} style={[s.bdRow, { borderBottomColor: t.line }, i === rows.length - 1 && { borderBottomWidth: 0 }]}>
             <Text style={{ color: t.ink, fontSize: 15, fontWeight: i === rows.length - 1 ? '700' : '400' }}>{r[0]}</Text>
@@ -244,6 +260,23 @@ function Build({ t, b, setB, c }) {
           </View>
         ))}
         {c.warns.map((w) => <Text key={w} style={[s.note, { backgroundColor: t.warnBg, color: t.warn }]}>{w}</Text>)}
+        {c.textbookFL != null && Math.abs(c.textbookFL - c.hoseFL) >= 10 && (
+          <Text style={[s.note, { backgroundColor: t.hi, color: t.hiInk }]}>
+            {`Check the ${r0(c.pdp)}. This uses the CVFD chart: ${r0(c.hoseFL)} psi friction loss for this lay. The old textbook formula (C × Q² × L) gives about ${r0(c.textbookFL)} psi, or ${r0(c.pdp - c.hoseFL + c.textbookFL)} PDP. If ${r0(c.pdp)} is from your department's chart for low-friction hose, you're fine. If it isn't, check it against a flow test.`}
+          </Text>
+        )}
+      </Panel>
+      <Panel t={t} title="Pumping more than one line" subtitle="Governor, gating and water supply">
+        <Text style={[s.fieldLbl, { color: t.muted }]}>IDENTICAL LINES</Text>
+        <Tip t={t}>{`Same hose, length, nozzle and flow: pressure mode holds the discharge pressure. When you open the next line, the governor raises the RPM on its own to keep the pump at ${r0(c.pdp)} psi. Each identical line gets ${r0(c.pdp)}, so you don't touch it.`}</Tip>
+        <Text style={[s.fieldLbl, { color: t.muted, marginTop: 8 }]}>DIFFERENT LINES</Text>
+        <Tip t={t}>The governor holds one pressure for the whole pump. Build each line here to get its own PDP.</Tip>
+        <Tip t={t}>If the new line needs less pressure, gate its discharge valve down and watch that line's own gauge.</Tip>
+        <Tip t={t}>If it needs more, raise the governor to the highest line's pressure, then gate the lower line back down to its number.</Tip>
+        <Text style={[s.fieldLbl, { color: t.muted, marginTop: 8 }]}>WATCH YOUR WATER</Text>
+        <Tip t={t}>{c.lines > 1 ? `${c.lines} lines × ${c.gpm} gpm flow ${c.totalGpm} gpm.` : `One line flows ${c.gpm} gpm. Two flow ${c.gpm * 2} gpm.`}</Tip>
+        {c.totalGpm > 0 && <Tip t={t}>{`On tank water at ${c.totalGpm} gpm, a tank empties fast: ${TANKS.map((g) => `${g} gal in about ${mins(g / c.totalGpm)} min`).join(', ')}.`}</Tip>}
+        <Tip t={t}>On a hydrant, keep intake pressure at 20 psi or above as the RPM climbs.</Tip>
       </Panel>
       <Btn t={t} label="START OVER" onPress={() => setB(DEFAULT_BUILD)} />
       <Modal visible={picking} animationType="slide" onRequestClose={() => setPicking(false)}>
