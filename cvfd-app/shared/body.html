@@ -591,6 +591,7 @@ function vHome(){
         <a class="tile" href="#sogs" style="--c:var(--s3)"><b>SOGs</b><span>${n} policies and guidelines, searchable</span></a>
         <a class="tile" href="${PUMP_CHART}" style="--c:var(--s2)"><b>Pump Chart</b><span>Crosslays, PDP builder, friction loss, hydrants</span></a>
         <a class="tile" href="#sizeup" style="--c:var(--s5)"><b>First-In Size-Up</b><span>Radio report, 360, strategy prompts</span></a>
+        <a class="tile" href="#extrication" style="--c:var(--s2)"><b>Vehicle Extrication</b><span>6 crash scenes, 4 views each, decision cards</span></a>
         <a class="tile" href="#drills" style="--c:var(--s4)"><b>5-Minute Drills</b><span>100 quick station-level drills, by topic</span></a>
         ${store.sections.filter(s=>s.area==="suppression").map(c=>`<a class="tile" href="#cat-${esc(c.id)}" style="--c:var(--s1)"><b>${esc(c.title)}</b><span>${esc(c.blurb||"")}</span></a>`).join("")}
       </div>
@@ -730,6 +731,67 @@ function vPracticeScene(id){
     ${shown ? `<div class="card prac-card"><div class="card-h"><h3>Sample reports</h3></div><div class="card-b body"><h4 class="prac-h4">Initial report</h4><div class="say"><span class="mic" aria-hidden="true"></span><span>${esc(p.irr)}</span></div>${p.followup?`<h4 class="prac-h4">360 report</h4><div class="say"><span class="mic" aria-hidden="true"></span><span>${esc(p.followup)}</span></div>`:""}${p.sides?`<h4 class="prac-h4">Side by side</h4><ul>${"ABCD".split("").map(k=>`<li><b>${SN[k]}:</b> ${esc(p.sidenotes[k])}</li>`).join("")}</ul>`:""}<h4 class="prac-h4">Things to notice</h4><ul>${p.notes.map(n=>`<li>${esc(n)}</li>`).join("")}</ul></div></div>`
       : `<button class="btn primary prac-show" type="button" data-pshow="${esc(id)}">Show sample reports</button>`}
     <div class="prac-nav"><a class="btn" href="#practice-${prev.id}">‹ Previous</a><a class="btn" href="#practice-${next.id}">Next ›</a></div>
+  </section>`;
+}
+// ---------- vehicle extrication tabletop ----------
+const XTR = [
+ {n:"01", t:"Intersection side impact", s:"Pickup into the side of a sedan at a signalized intersection. Bystander on scene, traffic still moving.",
+  ask:"Which approaches still have moving traffic? Which side gives you the best patient access, and where would that put your crew relative to traffic?",
+  card:{reveal:"The passenger door opens. The driver's left foot is physically pinned in the footwell. The driver is becoming less responsive.", plan:"Compare using the passenger opening for immediate patient contact with creating working room on the driver side. What's holding the foot? What does your proposed tool operation accomplish? Where will EMS receive the patient?", title:"Door access versus foot release"}},
+ {n:"02", t:"SUV on its side", s:"SUV on its side in a roadside ditch at night. Two-lane road, oncoming headlights.",
+  ask:"What's supporting the SUV? What can you tell about the ditch and footing? Which parts of the cabin are still out of view?",
+  card:{reveal:"The driver is suspended by the belt. A rear passenger is now visible and unresponsive. The SUV shifts when the driver moves.", plan:"Compare rear access with an upper-side opening. Who monitors stabilization? Who supports the suspended driver during release? Can the route you use to reach either patient also serve as the removal route?", title:"Rollover with a second patient"}},
+ {n:"03", t:"Box-truck underride", s:"Sedan under the rear of a box truck on the shoulder of a divided highway, just past a curve. Dawn.",
+  ask:"Where might the vehicles be bearing against each other? What could move if one shifts? Can approaching drivers see the work area from before the curve?",
+  card:{reveal:"The wrecker operator offers to pull the box truck forward. The sedan driver's responsiveness is declining.", plan:"Compare gaining access with the vehicles in place against a coordinated separation plan. What would rule out each option? Who owns the movement decision, who watches the patient and vehicle contact points, and what's the stop signal?", title:"Underride with a wrecker on scene"}},
+ {n:"04", t:"EV into parking deck barrier", s:"Electric crossover nose-first into a concrete barrier inside a parking deck. Vapor rising from the front.",
+  ask:"Where is the vapor visible, and what about its source is still unknown? How do the deck clearance and barrier affect access, staging, and patient removal?"},
+ {n:"05", t:"Pickup into utility pole", s:"Pickup into a leaning utility pole on a residential street at night. A line is down across the truck. Bystanders in a yard.",
+  ask:"Where can you trace the wire from each view? Where does it disappear from sight? Which approaches are bystanders using, and what must command verify before changing the access plan?"},
+ {n:"06", t:"Head-on crash", s:"Sedan and crossover head-on at the edge of a grass median on a divided road. Caller on the phone between the vehicles.",
+  ask:"Which vehicle is exposed to traffic? How does the median affect footing and patient removal? Who's accounting for occupants from both vehicles?",
+  card:{reveal:"The sedan driver is alert with both knees pinned. The crossover driver needs immediate airway attention, and a usable door is found on the far side. The next rescue unit is eight minutes out.", plan:"Decide who gets patient contact first and where the tool team goes first. Assign all four crew members. Give the incoming rescue unit a specific assignment and say what change in either patient would make you reassign the team.", title:"Two drivers, one tool team"}}
+];
+const XV = [["A","Front"],["B","Driver side"],["C","Rear"],["D","Passenger side"]];
+const XQ = ["What do you see, and exactly where is it?","What could happen, and who would be exposed?","What do you need to verify before committing personnel?","What does that change about your approach, apparatus placement, or resource request?"];
+const XEX = "From the rear, I can see the crash is just past a curve. Approaching drivers may have limited time to react. I need to know who's covering the upstream approach before I assign anyone to work on the roadway side.";
+const XREQ = ["Patient access route","Release objective","Removal route","Plan B","A specific trigger to switch","The tools you actually carry","Each job assigned to a seat on the engine"];
+const XRADIO = ["Confirmed patient count","Who's physically pinned","The biggest hazard","The current extrication objective","The next unit's assignment"];
+const xtrView = {}, xtrAsk = new Set(), xtrCard = new Set();
+const xImg = (n,k) => `practice/x-${n}-${k}.jpg`;
+function xPass1(){ return `<ol class="prac-steps">${XQ.map(q=>`<li>${esc(q)}</li>`).join("")}</ol><p>Require a complete statement. For example:</p><div class="say"><span class="mic" aria-hidden="true"></span><span>${esc(XEX)}</span></div>`; }
+function xRadio(){ return `<p>Have the officer give a 20-second update with:</p><ol class="prac-steps">${XRADIO.map(q=>`<li>${esc(q)}</li>`).join("")}</ol>`; }
+function vXtr(){
+  return `<section class="view" style="--c:var(--s2)">
+    <a class="sub" href="#home">‹ Home</a>
+    <div class="gh"><h2>Vehicle Extrication</h2><span class="sub">${XTR.length} scenes</span></div>
+    <p class="sub">Tabletop size-up for crash scenes. Each scene has four views: front, driver side, rear and passenger side. Run it in two passes, then finish on the radio.</p>
+    <div class="prac-grid">${XTR.map(x=>`<a class="prac-tile" href="#xtr-${x.n}"><span class="prac-fig"><img src="${xImg(x.n,"A")}" alt="${esc(x.t)}" loading="lazy"><span class="prac-360">${x.card?"4 views · card":"4 views"}</span></span><b>${x.n} · ${esc(x.t)}</b><small>${esc(x.s)}</small></a>`).join("")}</div>
+    <div class="card prac-card" style="margin-top:14px"><div class="card-h"><h3>Pass 1 | Describe the hazards</h3></div><div class="card-b body"><p>For each view, have the crew answer out loud:</p>${xPass1()}<p class="sub">Instructor prompts are on each scene, to use after the crew answers.</p></div></div>
+    <div class="card prac-card"><div class="card-h"><h3>Pass 2 | Extrication decision cards</h3></div><div class="card-b body"><p>Read these only after the crew has completed its hazard size-up. For each card, require:</p><ul>${XREQ.map(r=>`<li>${esc(r)}</li>`).join("")}</ul><p class="sub">Cards for scenes 01, 02, 03 and 06.</p></div></div>
+    <div class="card prac-card"><div class="card-h"><h3>Finish on the radio</h3></div><div class="card-b body">${xRadio()}</div></div>
+  </section>`;
+}
+function vXtrScene(n){
+  const i = XTR.findIndex(x=>x.n===n); const x = XTR[i];
+  if (!x) return vXtr();
+  const prev = XTR[(i-1+XTR.length)%XTR.length], next = XTR[(i+1)%XTR.length];
+  const v = xtrView[n] || "A"; const vl = XV.find(a=>a[0]===v)[1];
+  const c = x.card, shown = xtrCard.has(n), asked = xtrAsk.has(n);
+  return `<section class="view" style="--c:var(--s2)">
+    <a class="sub" href="#extrication">‹ All crash scenes</a>
+    <div class="gh"><h2>${x.n} · ${esc(x.t)}</h2><span class="sub">${i+1} of ${XTR.length}</span></div>
+    <div class="prac-sides" role="tablist" aria-label="View">${XV.map(([k,l])=>`<button type="button" role="tab" class="prac-side" data-xview="${n}:${k}" aria-selected="${k===v}">${l}</button>`).join("")}</div>
+    <div class="prac-big"><img src="${xImg(n,v)}" alt="${esc(x.t)}, ${esc(vl)} view"></div>
+    <div class="card prac-card"><div class="card-b body"><p><b>Scene:</b> ${esc(x.s)}</p><p class="sub">Start on the front view. Tap through all four views before you commit to a plan.</p></div></div>
+    <div class="card prac-card"><div class="card-h"><span class="stepn">1</span><h3>Pass 1 | Describe the hazards</h3></div><div class="card-b body"><p>For each view, have the crew answer out loud:</p>${xPass1()}
+      ${asked?`<div class="xtr-ask"><b>Instructor prompt, ask the crew:</b> ${esc(x.ask)}</div>`:`<button class="btn" type="button" data-xask="${n}">Show instructor prompt</button>`}</div></div>
+    <div class="card prac-card"><div class="card-h"><span class="stepn">2</span><h3>Pass 2 | Extrication decision card</h3></div><div class="card-b body">
+      ${!c?`<p class="sub">No decision card for this scene. Spend the time on Pass 1, then finish on the radio.</p>`
+        :`<p>Read this only after the crew has completed its hazard size-up.</p>${shown?`<h4 class="prac-h4">Card ${x.n} · ${esc(c.title)}</h4><div class="xtr-card"><b>Reveal to the crew</b><p>${esc(c.reveal)}</p></div><div class="xtr-card plan"><b>Make them game-plan</b><p>${esc(c.plan)}</p></div><p><b>Require:</b></p><ul>${XREQ.map(r=>`<li>${esc(r)}</li>`).join("")}</ul>`:`<button class="btn primary" type="button" data-xcard="${n}">Reveal decision card</button>`}`}
+    </div></div>
+    <div class="card prac-card"><div class="card-h"><span class="stepn">3</span><h3>Finish on the radio</h3></div><div class="card-b body">${xRadio()}</div></div>
+    <div class="prac-nav"><a class="btn" href="#xtr-${prev.n}">‹ Previous</a><a class="btn" href="#xtr-${next.n}">Next ›</a></div>
   </section>`;
 }
 function vSizeup(){
@@ -908,6 +970,8 @@ function route(){
   else if (MODE==="td" && (h==="sizeup" || h==="tools")) { html = `<section class="view"><div class="empty">That lives in the CVFD Field Guide.<br><br><a class="btn primary" href="${GUIDE_APP}" target="_blank" rel="noopener">Open CVFD Field Guide ↗</a></div></section>`; }
   else if (h==="sizeup") { html = vSizeup(); tab="sizeup"; }
   else if (h==="drills" && MODE!=="td") { html = vDrills(); tab="home"; }
+  else if (h==="extrication" && MODE!=="td") { html = vXtr(); tab="home"; }
+  else if ((m = h.match(/^xtr-(\d{2})$/)) && MODE!=="td") { html = vXtrScene(m[1]); tab="home"; }
   else if (h==="practice") { html = vPractice(); tab="sizeup"; }
   else if ((m = h.match(/^practice-(.+)$/))) { html = vPracticeScene(m[1]); tab="sizeup"; }
   else if (h==="training") { html = vTraining(); tab="training"; }
@@ -982,6 +1046,9 @@ view.addEventListener("click", e => {
   if (e.target.closest("[data-drand]")) { const pool = DRILLS.filter(x=>drillCat==="all"||x.c===drillCat); let p; do { p = pool[Math.floor(Math.random()*pool.length)].n; } while (pool.length>1 && p===drillPick); drillPick = p; render(); window.scrollTo({top:0}); return; }
   const pk = e.target.closest("[data-pkind]"); if (pk) { pracKind = pk.dataset.pkind; render(); return; }
   const psd = e.target.closest("[data-pside]"); if (psd) { const [pid,k] = psd.dataset.pside.split(":"); pracSide[pid] = k; render(); return; }
+  const xv = e.target.closest("[data-xview]"); if (xv) { const [n,k] = xv.dataset.xview.split(":"); xtrView[n] = k; render(); return; }
+  const xa = e.target.closest("[data-xask]"); if (xa) { xtrAsk.add(xa.dataset.xask); render(); return; }
+  const xc = e.target.closest("[data-xcard]"); if (xc) { xtrCard.add(xc.dataset.xcard); render(); return; }
   const ps = e.target.closest("[data-pshow]"); if (ps) { pracShown.add(ps.dataset.pshow); render(); return; }
   const chip = e.target.closest("[data-series]"); if (chip) { sogFilter = chip.dataset.series; render(); return; }
   const jump = e.target.closest("[data-jump]"); if (jump) { const t = document.getElementById(jump.dataset.jump); t && t.scrollIntoView({block:"start"}); return; }
