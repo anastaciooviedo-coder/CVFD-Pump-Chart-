@@ -594,6 +594,7 @@ function vHome(){
         <a class="tile" href="#calls" style="--c:var(--s1)"><b>Call Types</b><span>14 modules from the 300-series SOGs: gas, CO, EV, hazmat and more</span></a>
         <a class="tile" href="#tactics" style="--c:var(--s3)"><b>First Due Engine Tactics</b><span>Offensive, transitional, defensive, leader lines, water</span></a>
         <a class="tile" href="#extrication" style="--c:var(--s2)"><b>Vehicle Extrication</b><span>6 crash scenes, 4 views each, decision cards</span></a>
+        <a class="tile" href="#grips" style="--c:var(--s3)"><b>Hoseline Grips</b><span>Hip grip, clamp, crooked lean, Comella lock, backup</span></a>
         <a class="tile" href="#drills" style="--c:var(--s4)"><b>5-Minute Drills</b><span>100 quick station-level drills, by topic</span></a>
         ${store.sections.filter(s=>s.area==="suppression").map(c=>`<a class="tile" href="#cat-${esc(c.id)}" style="--c:var(--s1)"><b>${esc(c.title)}</b><span>${esc(c.blurb||"")}</span></a>`).join("")}
       </div>
@@ -831,6 +832,80 @@ function vCall(k){
     <div class="prac-nav"><a class="btn" href="#call-${prev.k}">‹ ${esc(prev.t)}</a><a class="btn" href="#call-${next.k}">${esc(next.t)} ›</a></div>
   </section>`;
 }
+// ---------- hoseline grips (user's module) ----------
+const GRIPS=[
+{id:'hip',name:'Hip Grip',who:'Nozzle',use:'Your default working position, standing or kneeling. Lets one firefighter control the line and still advance.',
+ steps:[
+  'Make a "shelf" where the top of your right thigh meets your hip. Same shelf whether you\'re standing or on a knee.',
+  'Seat the hose into that shelf so the line runs straight from the floor into your back hip.',
+  'Right (back) hand rides just forward of the hip bone. Press in and down. The shelf\'s friction holds the line, so the grip stays loose.',
+  'Left (lead) hand goes forward on the hose, about an arm\'s length back from the tip. It aims the stream and works the bale. Hands never cross.',
+  'Lean: kneeling, lean back into the reaction. Standing with a backup, lean back into them. Standing alone for a quick hit, lean forward.'],
+ cues:['If your lead hand can just reach the tip, your spacing is right','Weight on your skeleton, not your biceps','On a low-pressure 1¾″, you can use your back elbow instead of the hand to support the line and stop kinks'],
+ bad:['Death grip on the hose','Lifting the line up over your back leg','Hands crossed, or reaching for a pistol grip','Too much hose out front, so the nozzle wanders']},
+{id:'clamp',name:'The Clamp',who:'Nozzle',use:'Holding a position and flowing for a while, or working short-handed. Your body weight pins the line to the floor.',
+ steps:[
+  'Sit down on the hose line.',
+  'Right leg crosses under you and over the hose, trapping it against the floor.',
+  'Left leg comes up, bent, in front of you.',
+  'Left hand on the nozzle at the coupling. Right hand on the hose about 12″ behind it.',
+  'Let the floor and your seat absorb the reaction. Your hands only aim.',
+  'To move: "clamp slide." Keep the line pinned and scoot forward on your seat, or come up into the hip grip.'],
+ cues:['Line pinned under your leg, not held by your arms','Stay low. It\'s a great position in high heat','Practice transitioning hip grip ↔ clamp without shutting down'],
+ bad:['Hose sliding out from under the leg','Sitting so upright that you lose your low profile','Clamping on a kink right behind you']},
+{id:'lean',name:'Crooked Lean',who:'Nozzle + Backup',use:'Two-person nozzle team on a 1¾″ or 2½″, kneeling or standing. The backup becomes the "motor" that drives the push.',
+ steps:[
+  'Nozzle: lean back into your backup. Back leg stays light; your center of gravity sits higher than theirs.',
+  'Nozzle: back arm straight, dropped inside your back knee, under-gripping the hose. Treat it like a cable. Don\'t pull hose with it. Back hand stays in hip-grip position.',
+  'Your SCBA bottles overlap, nozzle\'s shoulder over the backup\'s shoulder (or arm, on a 1¾″). That overlap is what makes the team stable.',
+  'Backup: angle forward and drive your shoulder (or arm on a 1¾″) into the nozzle\'s back. Lead arm low; its elbow helps lock the nozzle\'s hip grip. Back hand in line with your up knee.',
+  'Set up completely before moving. Your legs and the nozzle\'s legs must not touch.',
+  'Moving forward: the backup pushes and lifts the nozzle ahead. Nozzle\'s back leg shuffles, lead leg steps. Keep the same spacing on the line.',
+  'Moving backward: the nozzle becomes the motor, and the backup slides with them.'],
+ cues:['Backup drives, nozzle aims','Flow while moving: sweep up the walls and across the ceiling in an upside-down U, and clear the floor ahead','Wait for the push. Don\'t anticipate it'],
+ bad:['Nozzle pulling hose with the back arm','Backup reaching too far back, which kills the forward lean','Legs tangled between the two','Rushing the setup']},
+{id:'comella',name:'Comella Lock',who:'Nozzle',use:'Named for Oakland Capt. Jay Comella. Locks the reaction into your leg and the floor. Strong on any handline size, and especially useful when you\'re short-handed.',
+ steps:[
+  'Left knee down, right leg up.',
+  'Leave about 3 ft of hose out in front of you so small arm movements aim the stream.',
+  'Pinch the hose between your right hip and your belly.',
+  'Drop your right arm well below and in front of your right thigh, so your right elbow and tricep sit inside the thigh. The reaction travels from the hose into your arm, down your leg, and into the floor.',
+  'Left hand on the nozzle at the coupling (about 12″ ahead of the right) to work the bale and aim.',
+  'Keep about 5 ft of straight hose behind you. No bends right behind the lock.'],
+ cues:['Some firefighters lock the hose higher, up into the armpit. Find what holds','You can advance from the lock. Practice moving without breaking position','Single-handed Comella is a demo of how little effort it takes, not a working position'],
+ bad:['Kink just behind you from cranking the line too hard','Arm outside the thigh, so you\'re holding the reaction with muscle','Too little hose out front, so you can\'t aim']}
+];
+const GRIP_BACKUP={title:'Backing up the line',items:[
+ 'Stay within arm\'s reach of the nozzle. In the crooked lean, you\'re in contact.',
+ 'Your job is to take the reaction and keep the line straight behind the nozzle, so the nozzle only has to aim.',
+ 'Out of hose? Grab the line and pull it, then shove the hose forward to the nozzle. Then resume the advance.',
+ 'Door/control firefighter: use half a crooked lean (back arm straight, under-grip) to work hose farther back on the line and keep it off corners.',
+ 'Watch above, behind, and the line path. You\'re the nozzle\'s eyes.']};
+const GRIP_VIDS={hip:'https://www.youtube.com/watch?v=oXwa8qddjm0',clamp:'https://www.youtube.com/watch?v=oXwa8qddjm0',lean:'https://www.youtube.com/watch?v=Pl0waerZklc',comella:'https://www.youtube.com/watch?v=AZazT3TPCY4'};
+let gripDone={}; try{ gripDone=JSON.parse(localStorage.getItem('cvfdGripCheck')||'{}'); }catch(e){}
+function gripSave(){ try{ localStorage.setItem('cvfdGripCheck',JSON.stringify(gripDone)); }catch(e){} }
+function vGrips(id){
+  const t = GRIPS.find(x=>x.id===id) || GRIPS[0];
+  const li = a => a.map(x=>`<li>${esc(x)}</li>`).join("");
+  return `<section class="view" style="--c:var(--red)">
+    <a class="sub" href="#home">‹ Home</a>
+    <div class="gh"><h2>Hoseline Grips &amp; Backup</h2></div>
+    <p class="sub">Four positions for controlling a flowing handline. Written for a right-handed nozzle — lefties, mirror everything.</p>
+    <div class="grip-tabs" role="tablist" aria-label="Techniques">${GRIPS.map(x=>`<a role="tab" href="#grips-${x.id}" aria-selected="${x===t}">${esc(x.name)}</a>`).join("")}</div>
+    <span class="grip-who">${esc(t.who)}</span>
+    <h3 class="grip-h">${esc(t.name)}</h3>
+    <p class="grip-use">${esc(t.use)}</p>
+    <ol class="grip-steps">${li(t.steps)}</ol>
+    <div class="card grip-card"><div class="card-b"><p class="grip-sub">Coaching cues</p><ul class="grip-cues">${li(t.cues)}</ul></div></div>
+    <div class="card grip-card"><div class="card-b"><p class="grip-sub">Common mistakes</p><ul class="grip-bad">${li(t.bad)}</ul></div></div>
+    ${t.id==='lean'?`<div class="card grip-card"><div class="card-b"><p class="grip-sub">${esc(GRIP_BACKUP.title)}</p><ul>${li(GRIP_BACKUP.items)}</ul></div></div>`:""}
+    <div class="card grip-card"><div class="card-b"><p class="grip-sub">Peer check-off (flowing line)</p>${t.steps.map((s,i)=>{const k=t.id+i; return `<label class="chk grip-chk"><input type="checkbox" data-gk="${k}" ${gripDone[k]?"checked":""}><span>Step ${i+1} done correctly</span></label>`;}).join("")}
+      <button class="btn sm" type="button" data-gclr="${t.id}">Clear checks</button></div></div>
+    <p class="grip-watch">Watch it: <a href="${GRIP_VIDS[t.id]}" target="_blank" rel="noopener">video demo ↗</a></p>
+    <p class="sub">Check-offs save on this phone only.</p>
+    <p class="sub">CVFD Training Division · Hoseline Grips module. Learn these hands-on with an instructor before using them on a fireground. Follow CVFD SOGs and your officer's direction.</p>
+  </section>`;
+}
 function vSizeup(){
   const sec = store.sections.find(s=>s.area==="sizeup");
   const all = sec ? itemsOf(sec.id) : [];
@@ -1007,6 +1082,7 @@ function route(){
   else if (MODE==="td" && (h==="sizeup" || h==="tools")) { html = `<section class="view"><div class="empty">That lives in the CVFD Field Guide.<br><br><a class="btn primary" href="${GUIDE_APP}" target="_blank" rel="noopener">Open CVFD Field Guide ↗</a></div></section>`; }
   else if (h==="sizeup") { html = vSizeup(); tab="sizeup"; }
   else if (h==="drills" && MODE!=="td") { html = vDrills(); tab="home"; }
+  else if ((m = h.match(/^grips(?:-([a-z]+))?$/)) && MODE!=="td") { html = vGrips(m[1]); tab="home"; }
   else if (h==="calls" && MODE!=="td") { html = vCalls(); tab="home"; }
   else if ((m = h.match(/^call-([a-z]+)$/)) && MODE!=="td") { html = vCall(m[1]); tab="home"; }
   else if ((m = h.match(/^tactics(?:-([a-z]+))?$/)) && MODE!=="td") { html = vTactics(m[1]); tab="home"; }
@@ -1071,6 +1147,7 @@ view.addEventListener("change", e => {
   if (t.dataset.task) { setCheck(t.dataset.item, t.dataset.task, t.checked ? {d: today(), by:""} : null); return; }
   if (t.dataset.ini) { setBookText(t.dataset.item, "ini", t.dataset.ini, t.value.trim()); return; }
   if (t.dataset.field) { setBookText(t.dataset.item, "field", t.dataset.field, t.value.trim()); return; }
+  if (t.dataset.gk) { gripDone[t.dataset.gk] = t.checked; if (!t.checked) delete gripDone[t.dataset.gk]; gripSave(); return; }
   if (e.target.matches(".chk input")) {
     const k = e.target.dataset.k; e.target.checked ? checked.add(k) : checked.delete(k);
     try { sessionStorage.setItem("sizeup-checked", JSON.stringify([...checked])); } catch(err) {}
@@ -1089,6 +1166,7 @@ view.addEventListener("click", e => {
   const xv = e.target.closest("[data-xview]"); if (xv) { const [n,k] = xv.dataset.xview.split(":"); xtrView[n] = k; render(); return; }
   const xa = e.target.closest("[data-xask]"); if (xa) { xtrAsk.add(xa.dataset.xask); render(); return; }
   const xc = e.target.closest("[data-xcard]"); if (xc) { xtrCard.add(xc.dataset.xcard); render(); return; }
+  const gc = e.target.closest("[data-gclr]"); if (gc) { Object.keys(gripDone).forEach(k=>{ if (k.startsWith(gc.dataset.gclr)) delete gripDone[k]; }); gripSave(); render(); return; }
   const ps = e.target.closest("[data-pshow]"); if (ps) { pracShown.add(ps.dataset.pshow); render(); return; }
   const chip = e.target.closest("[data-series]"); if (chip) { sogFilter = chip.dataset.series; render(); return; }
   const jump = e.target.closest("[data-jump]"); if (jump) { const t = document.getElementById(jump.dataset.jump); t && t.scrollIntoView({block:"start"}); return; }
