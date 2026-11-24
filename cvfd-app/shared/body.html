@@ -101,7 +101,7 @@ function linkRefs(html){
   // turn 303 or 303.04 references into links to the SOG
   return html.replace(/\b([1-5]\d{2})(\.\d{2})?\b/g, (m, n, sub) => SOGS && SOGS.find(s=>s.s===n) ? `<a href="#sog-${n}${sub?"-"+sub.slice(1):""}">${m}</a>` : m);
 }
-function inline(t){ return linkRefs(esc(t).replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>")); }
+function inline(t){ return linkRefs(esc(t).replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>")).replace(/\bhttps:\/\/[^\s<"]+[^\s<".,)]/g, u=>`<a href="${u}" target="_blank" rel="noopener">${u.replace(/^https:\/\//,"")} ↗</a>`); }
 function fill(h){ return h.replace(/\[([^\]\n]{1,80})\]/g, '<span class="fillin">$1</span>'); }
 function rich(t){ return fill(inline(t)); }
 function scriptLine(t){
@@ -157,7 +157,7 @@ function editBtns(kind, id){
 const ISO_CATS = [["company","Company training",192],["facility","Facilities",18],["hazmat","Haz Mat",6],["driver","Driver/Operator CE",12],["officer","Fire Officer CE",12],["other","Other (not ISO)",0]];
 const DESIG = {"Firefighter":["company","facility","hazmat"],"Driver/Operator":["company","facility","hazmat","driver"],"Fire Officer":["company","facility","hazmat","officer"]};
 const me = {uid:null, ready:false, failed:false, noUser:false, doc:null, certs:[], hours:[], books:{}, acct:""};
-let userNs = null, roster = null, rosterNames = {}, memberView = null, hoursYear = new Date().getFullYear(), pendingRender = false;
+let rosterFilter = "all", userNs = null, roster = null, rosterNames = {}, memberView = null, hoursYear = new Date().getFullYear(), pendingRender = false;
 function today(){ const d = new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
 function fmtDate(s){ if(!s) return ""; const [y,m,d] = s.split("-"); return m&&d ? `${+m}/${+d}/${y}` : s; }
 function hashStr(t){ let h = 5381; for (const ch of t) h = ((h<<5)+h+ch.charCodeAt(0))|0; return (h>>>0).toString(36); }
@@ -223,10 +223,14 @@ async function initMe(user){
     ref.collection("books").onSnapshot(s => { me.books = Object.fromEntries(s.docs.map(d=>[d.id,{id:d.id,...d.data()}])); tick(); }, fail);
   } catch(e) { me.failed = true; softRender(); }
 }
+const RANKS = ["Cadet","Probationary Firefighter","Firefighter","Engine Operator","Lieutenant","Captain","Battalion Chief","Deputy / Assistant Chief","Fire Chief"];
+const MEMBER_TYPES = ["Volunteer","Duty Crew"];
+const ASSIGNMENTS = [["specops","Special Operations"],["td","Training Division"]];
+function memberTags(m){ return [m.memberType, ...(m.assign||[]).map(k=>(ASSIGNMENTS.find(a=>a[0]===k)||[,k])[1])].filter(Boolean); }
 function meRef(uid){ return db.collection("members").doc(uid||me.uid); }
 async function ensureMe(){
   if (me.doc) return;
-  const base = {name:"", rank:"", station:"", empId:"", designation:"Firefighter", created: today()};
+  const base = {name:"", rank:"", memberType:"", assign:[], station:"", empId:"", designation:"Firefighter", created: today()};
   await meRef().set(base); me.doc = base;
 }
 function softRender(){
@@ -252,11 +256,13 @@ function vMe(){
     <div class="card"><div class="card-h"><h3>Profile</h3></div><form class="card-b" id="pf" data-keep>
       <label class="field"><span>Full name</span><input type="text" id="pf-name" value="${esc(p.name||"")}" placeholder="${esc(me.acct||"First and last name")}" autocomplete="name"></label>
       <div class="grid2">
-        <label class="field"><span>Rank</span><input type="text" id="pf-rank" value="${esc(p.rank||"")}" placeholder="e.g. Firefighter"></label>
+        <label class="field"><span>Rank</span><select id="pf-rank"><option value="">Choose your rank</option>${[...RANKS, ...(p.rank&&!RANKS.includes(p.rank)?[p.rank]:[])].map(r=>`<option ${p.rank===r?"selected":""}>${esc(r)}</option>`).join("")}</select></label>
+        <label class="field"><span>Member type</span><select id="pf-memberType"><option value="">Choose one</option>${MEMBER_TYPES.map(r=>`<option ${p.memberType===r?"selected":""}>${r}</option>`).join("")}</select></label>
         <label class="field"><span>Station / shift</span><input type="text" id="pf-station" value="${esc(p.station||"")}"></label>
         <label class="field"><span>Employee ID</span><input type="text" id="pf-empId" value="${esc(p.empId||"")}"></label>
         <label class="field"><span>ISO designation</span><select id="pf-designation">${Object.keys(DESIG).map(d=>`<option ${ (p.designation||"Firefighter")===d?"selected":""}>${d}</option>`).join("")}</select></label>
       </div>
+      <fieldset class="field assign"><legend>Assignments (check all that apply)</legend>${ASSIGNMENTS.map(([k,l])=>`<label class="chk"><input type="checkbox" data-assign="${k}" ${(p.assign||[]).includes(k)?"checked":""}><span>${l}</span></label>`).join("")}</fieldset>
       <div class="actions"><button class="btn primary" type="submit">Save profile</button></div>
     </form></div>
 
@@ -380,11 +386,13 @@ function vRoster(){
   const head = `${cadreNav("roster")}<div class="gh"><h2>Member roster</h2>${roster&&roster.ready?`<span class="sub">${roster.list.length} members</span>`:""}</div>`;
   if (!roster || !roster.ready) return `<section class="view">${head}<p class="sub">${roster&&roster.failed?"The roster could not load.":"Loading…"}</p></section>`;
   const y = new Date().getFullYear();
-  const list = [...roster.list].sort((a,b)=>(needsReview(b)-needsReview(a)) || (needsReview(a)&&needsReview(b) ? String(b.updatedAt).localeCompare(String(a.updatedAt)) : memberName(a).localeCompare(memberName(b))));
+  const F = rosterFilter, match = m => F==="all" || m.memberType===F || (m.assign||[]).includes(F);
+  const list = [...roster.list].filter(match).sort((a,b)=>(needsReview(b)-needsReview(a)) || (needsReview(a)&&needsReview(b) ? String(b.updatedAt).localeCompare(String(a.updatedAt)) : memberName(a).localeCompare(memberName(b))));
   const nNew = list.filter(needsReview).length;
-  const row = m => { const iso = m.iso && m.iso[y]; const bks = Object.values(m.books||{}); const exp = (m.certs||[]).filter(c=>certStatus(c)[1]!=="ok" && c.expires).length; return `<a class="row-btn" href="#member-${esc(m.id)}" style="--c:${needsReview(m)?"var(--red)":"var(--s4)"}"><span class="n">${iso?iso.pct+"%":"–"}</span><span class="m"><b>${esc(memberName(m))} ${needsReview(m)?`<span class="pill bad">New</span>`:""}</b><small>${m.lastChange?esc(m.lastChange)+" · "+esc(ago(m.updatedAt)):esc([m.rank,m.station,m.designation].filter(Boolean).join(" · "))}${(m.certs||[]).length?" · "+(m.certs.length)+" certs"+(exp?` (${exp} expiring)`:""):""}${bks.length?" · "+bks.map(b=>esc(b.title)+" "+pct(b.done,b.total)+"%").join(", "):""}</small></span><span class="chev">›</span></a>`; };
+  const row = m => { const iso = m.iso && m.iso[y]; const bks = Object.values(m.books||{}); const exp = (m.certs||[]).filter(c=>certStatus(c)[1]!=="ok" && c.expires).length; return `<a class="row-btn" href="#member-${esc(m.id)}" style="--c:${needsReview(m)?"var(--red)":"var(--s4)"}"><span class="n">${iso?iso.pct+"%":"–"}</span><span class="m"><b>${esc(memberName(m))} ${needsReview(m)?`<span class="pill bad">New</span>`:""}</b><small>${m.lastChange?esc(m.lastChange)+" · "+esc(ago(m.updatedAt)):esc([m.rank,...memberTags(m),m.station].filter(Boolean).join(" · "))}${(m.certs||[]).length?" · "+(m.certs.length)+" certs"+(exp?` (${exp} expiring)`:""):""}${bks.length?" · "+bks.map(b=>esc(b.title)+" "+pct(b.done,b.total)+"%").join(", "):""}</small></span><span class="chev">›</span></a>`; };
   return `<section class="view">${head}
     <p class="sub">Updates live as members save their profile, certifications, hours and book sign-offs. ISO % is for ${y}.</p>
+    <div class="chips" role="group" aria-label="Filter">${[["all","All"],...MEMBER_TYPES.map(t=>[t,t]),...ASSIGNMENTS].map(([k,l])=>`<button class="chip" type="button" data-rfilter="${esc(k)}" aria-pressed="${F===k}">${esc(l)} ${k==="all"?roster.list.length:roster.list.filter(m=>m.memberType===k||(m.assign||[]).includes(k)).length}</button>`).join("")}</div>
     ${nNew?`<p><span class="pill bad">${nNew} to review</span></p>`:""}
     ${list.length?`<div class="list">${list.map(row).join("")}</div>`:`<div class="empty">No members have set up a record yet. Share the guide with members as Contributors ("can use") so they can.</div>`}
   </section>`;
@@ -410,7 +418,7 @@ function vMember(uid){
   if (!m || !memberView.ready) return `<section class="view">${head}<p class="sub">${memberView&&memberView.failed?"This record could not load.":"Loading…"}</p></section>`;
   const y = new Date().getFullYear(), T = isoTotals(memberView.hours, y, m.designation);
   return `<section class="view" style="--c:var(--s4)">${head}
-    <div class="doc-h"><span class="num">${esc([m.rank, m.station].filter(Boolean).join(" · ")||"Member")}</span><h1>${esc(memberName(m))}</h1><span class="meta">${esc(m.designation||"Firefighter")}${m.empId?" · ID "+esc(m.empId):""}</span></div>
+    <div class="doc-h"><span class="num">${esc([m.rank, m.station].filter(Boolean).join(" · ")||"Member")}</span><h1>${esc(memberName(m))}</h1><span class="meta">${esc([...memberTags(m), (m.designation||"Firefighter")+" (ISO)"].join(" · "))}${m.empId?" · ID "+esc(m.empId):""}</span></div>
     <div class="card"><div class="card-b"><div class="rowx"><div><b>${needsReview(m)?`<span class="pill bad">New changes</span> `:`<span class="pill ok">Reviewed</span> `}${esc(m.lastChange||"No changes logged yet")}</b><small>${m.updatedAt?"Last update "+esc(ago(m.updatedAt)):""}${m.reviewedAt?" · Reviewed "+esc(ago(m.reviewedAt)):""}</small></div>${needsReview(m)?`<button class="btn sm primary" type="button" data-review="${esc(m.id)}">Mark reviewed</button>`:""}</div></div></div>
     <div class="card"><div class="card-h"><h3>ISO hours ${y}</h3></div><div class="card-b">
       <div class="prog"><div class="ph"><b>${T.applied} of ${T.req} hrs</b><span>${T.pct}%</span></div>${bar(T.pct)}</div>
@@ -568,6 +576,7 @@ function vHomeTdGroups(){
     ${canEdit?`<div class="group"><h2>Cadre (staff only)</h2><div class="tiles">
         ${APP?`<a class="tile" href="#cadre" style="--c:var(--s5)"><b>Weekly Check-In</b><span>This week's events, testing, tasks</span></a>`:`<a class="tile" href="${CK_APP}" target="_blank" rel="noopener" style="--c:var(--s5)"><b>Weekly Check-In ↗</b><span>Its own app now: events, testing, tasks</span></a>`}
         <a class="tile" href="#td" style="--c:var(--s5)"><b>TD Master Dashboard</b><span>Courses, actions, probation, taskbooks</span></a>
+        <a class="tile" href="#tddoc-officer-review" style="--c:var(--s5)"><b>Officer Review</b><span>Sign off and approve member task books</span></a>
         <a class="tile" href="#td-docs" style="--c:var(--s5)"><b>Cadre Material</b><span>Staff-only documents</span></a>
         <a class="tile" href="#roster" style="--c:var(--s5)"><b>Member Roster${(startRoster(), roster&&roster.ready&&roster.list.filter(needsReview).length)?` <span class="pill bad">${roster.list.filter(needsReview).length} new</span>`:""}</b><span>Live member records: profiles, certs, hours, books</span></a>
       </div></div>`:""}
@@ -592,7 +601,7 @@ function vHome(){
         <a class="tile" href="#sogs" style="--c:var(--s3)"><b>SOGs</b><span>${n} policies and guidelines, searchable</span></a>
         <a class="tile" href="${PUMP_CHART}" style="--c:var(--s2)"><b>Pump Chart</b><span>Crosslays, PDP builder, friction loss, hydrants</span></a>
         <a class="tile" href="#sizeup" style="--c:var(--s5)"><b>First-In Size-Up</b><span>Radio report, 360, strategy prompts</span></a>
-        <a class="tile" href="#apparatus" style="--c:var(--s3)"><b>Apparatus</b><span>Skeeter Type 5 brush truck, Crestline ambulance</span></a>
+        <a class="tile" href="#apparatus" style="--c:var(--s3)"><b>Apparatus</b><span>Engines, ladders, boosters, ambulance, pump, foam and aerial ops</span></a>
         <a class="tile" href="#calls" style="--c:var(--s1)"><b>Call Types</b><span>14 modules from the 300-series SOGs: gas, CO, EV, hazmat and more</span></a>
         <a class="tile" href="#tactics" style="--c:var(--s3)"><b>First Due Engine Tactics</b><span>Offensive, transitional, defensive, leader lines, water</span></a>
         <a class="tile" href="#extrication" style="--c:var(--s2)"><b>Vehicle Extrication</b><span>6 crash scenes, 4 views each, decision cards</span></a>
@@ -1212,6 +1221,7 @@ view.addEventListener("click", e => {
   const rv = e.target.closest("[data-review]"); if (rv) { rv.disabled = true; db.collection("members").doc(rv.dataset.review).update({reviewedAt: nowIso()}).then(()=>toast("Marked reviewed"), ()=>{ rv.disabled=false; toast("Could not save."); }); return; }
   const sb = e.target.closest("[data-start-book]"); if (sb) { startBook(sb.dataset.startBook, sb.dataset.tag).then(()=>render()); return; }
   const yr = e.target.closest("[data-year]"); if (yr) { hoursYear = +yr.dataset.year; render(); return; }
+  const rf = e.target.closest("[data-rfilter]"); if (rf) { rosterFilter = rf.dataset.rfilter; render(); return; }
   const dh = e.target.closest("[data-del-hours]"); if (dh) { delHours(dh.dataset.delHours); return; }
   const dc = e.target.closest("[data-del-cert]"); if (dc) { delCert(dc.dataset.delCert); return; }
   const b = e.target.closest("[data-act]"); if (!b) return;
@@ -1235,8 +1245,10 @@ view.addEventListener("submit", async e => {
   try {
     await ensureMe();
     if (f.id==="pf") {
-      await meRef().update({name:v("pf-name"), rank:v("pf-rank"), station:v("pf-station"), empId:v("pf-empId"), designation:v("pf-designation")||"Firefighter"});
-      me.doc = {...me.doc, designation:v("pf-designation")}; await saveIsoSummary(); await touch("Updated profile"); toast("Profile saved");
+      const assign = [...f.querySelectorAll("[data-assign]")].filter(x=>x.checked).map(x=>x.dataset.assign);
+      const prof = {name:v("pf-name"), rank:v("pf-rank"), memberType:v("pf-memberType"), assign, station:v("pf-station"), empId:v("pf-empId"), designation:v("pf-designation")||"Firefighter"};
+      await meRef().update(prof);
+      me.doc = {...me.doc, ...prof}; await saveIsoSummary(); await touch("Updated profile"); toast("Profile saved");
     } else if (f.id==="hf") {
       const hrs = parseFloat(v("hf-hours")); if (!(hrs>0)) { toast("Enter the hours"); return; }
       const rec = {date:v("hf-date")||today(), cat:v("hf-cat"), hours:Math.round(hrs*100)/100, note:v("hf-note"), added:today(), addedAt:nowIso()};
