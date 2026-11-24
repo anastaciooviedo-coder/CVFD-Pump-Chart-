@@ -233,7 +233,7 @@ async function initMe(user){
     const ref = meRef(); let n = 4;
     const tick = () => { if (n > 0 && --n === 0) me.ready = true; if (me.ready) softRender(); };
     const fail = () => { me.failed = true; softRender(); };
-    ref.onSnapshot(s => { me.doc = s.exists ? s.data() : null; tick(); if (APP && !s.metadata.hasPendingWrites) matchDept(); }, fail);
+    ref.onSnapshot(s => { me.doc = s.exists ? s.data() : null; tick(); if (APP && !s.metadata.hasPendingWrites) matchDept().then(()=>{ if (!me.doc && !s.metadata.fromCache) ensureMe().catch(()=>{}); }); }, fail);
     ref.collection("certs").onSnapshot(s => { me.certs = s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(a.expires||"9").localeCompare(String(b.expires||"9"))); tick(); }, fail);
     ref.collection("hours").onSnapshot(s => { me.hours = s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(b.date).localeCompare(String(a.date))); tick(); }, fail);
     if (APP) db.collection("config").doc("ce").onSnapshot(s => { cfg.ce = s.exists ? s.data() : null; softRender(); }, () => {});
@@ -257,6 +257,7 @@ const ASSIGNMENTS = [["specops","Special Operations"],["td","Training Division"]
 function typeOf(m){ return m.memberType==="Duty Crew" ? "Fire Duty Crew" : (m.memberType||""); }
 function memberTags(m){ return [m.officer&&m.officer.link?"Verified officer":"", typeOf(m), m.ems&&"EMS "+m.ems, sffmaHeld(m).length&&sffmaHeld(m).map(([,l])=>l.replace("SFFMA ","").replace(" certified","").replace("Firefighter ","FF ").replace("HazMat ","HM ")).join("/"), ...(m.assign||[]).map(k=>(ASSIGNMENTS.find(a=>a[0]===k)||[,k])[1])].filter(Boolean); }
 async function officerCopy(){
+  if (APP) return {title:"Officer Review", body:"", link:"tb/officers.html", at: nowIso()};
   const d = await db.collection("td").doc("main").collection("docs").doc("officer-review").get();
   const r = d.exists ? d.data() : null; const link = r && (String(r.body||"").match(/https:\/\/[^\s)]+/)||[])[0];
   if (!link) throw new Error("no link");
@@ -286,7 +287,25 @@ async function matchDept(){
     await meRef().set(put, {merge:true});
   } catch(e) {}
 }
-let dept = null, rosterMode = "signed", deptQ = "";
+let dept = null, rosterMode = "signed", deptQ = "", addMemberOpen = false;
+let tbm = null;
+function startTb(){
+  if (tbm || !APP || !db || !canEdit) return;
+  tbm = {list:[], ready:false, failed:false};
+  db.collection("tbMembers").onSnapshot(s => { tbm.list = s.docs.map(d=>({code:d.id, ...d.data()})).filter(m=>!m.deleted); tbm.ready = true; softRender(); }, () => { tbm.failed = true; softRender(); });
+}
+function tbPct(m){ let d=0,t=0; for (const id of Object.keys(m.phases||{})) { const v = m.summary && m.summary[id]; if (v) { d+=v.done; t+=v.total; } } return t ? Math.round(100*d/t) : 0; }
+function tbStatus(m){ const ph = Object.values(m.phases||{}); if (ph.length && ph.every(p=>p.status==="approved")) return "Complete"; if (ph.some(p=>p.status==="submitted")) return "Waiting for review"; if (ph.some(p=>p.status==="returned")) return "Returned"; return tbPct(m) || ph.some(p=>p.status!=="open") ? "In progress" : "Not started"; }
+function vTbCard(){
+  startTb();
+  const head = `<div class="card-h"><h3>Task books</h3></div>`;
+  if (!tbm || !tbm.ready) return `<div class="card">${head}<div class="card-b"><p class="sub">${tbm&&tbm.failed?"Task books could not load.":"Loading…"}</p></div></div>`;
+  const L = tbm.list.filter(m=>!m.archived), by = st => L.filter(m=>tbStatus(m)===st).length;
+  const wait = L.filter(m=>tbStatus(m)==="Waiting for review");
+  return `<div class="card">${head}<div class="card-b">${metricGrid([["Assigned", L.length, "tb/hub.html"],["Waiting for review", by("Waiting for review"), "tb/hub.html"],["In progress", by("In progress"), "tb/hub.html"],["Returned", by("Returned"), "tb/hub.html"],["Complete", by("Complete"), "tb/hub.html"],["Not started", by("Not started"), "tb/hub.html"]])}
+    ${wait.length?`<h4>Waiting for review</h4>${wait.map(m=>`<div class="tbl"><span><b>${esc(m.displayName||m.name)}</b></span><span>${esc(m.book&&m.book.title||"")} · ${Object.values(m.phases||{}).filter(p=>p.status==="submitted").map(p=>esc(p.label||"")).join(", ")}</span></div>`).join("")}`:""}
+    <p><a class="btn sm" href="tb/hub.html">Open the Task Book Hub</a></p></div></div>`;
+}
 const memberRole = {}; let rolesStarted = false;
 function startRoles(){
   if (rolesStarted || !APP || !db || !canEdit) return; rolesStarted = true;
@@ -308,6 +327,17 @@ function vDept(head, F){
   return `<section class="view">${head}
     <p class="sub">${dept.list.length} active members from Aladtec · ${nSigned} signed up. Members match by the email Aladtec has for them.</p>
     <div class="chips" role="group" aria-label="Filter">${[["all","All"],...MEMBER_TYPES.map(t=>[t,t]),...ASSIGNMENTS].map(([k,l])=>`<button class="chip" type="button" data-rfilter="${esc(k)}" aria-pressed="${F===k}">${esc(l)} ${k==="all"?dept.list.length:dept.list.filter(r=>r.memberType===k||(r.assign||[]).includes(k)).length}</button>`).join("")}</div>
+    ${addMemberOpen?`<div class="card"><div class="card-b" style="padding-bottom:0"><b>Add a member</b> <button class="btn sm" type="button" data-addm="0" style="float:right">Close</button></div><form id="addm" data-keep class="card-b grid2">
+      <label class="field"><span>First name</span><input type="text" id="am-first" required></label>
+      <label class="field"><span>Last name</span><input type="text" id="am-last" required></label>
+      <label class="field" style="grid-column:1/-1"><span>Email (the one they'll sign up with)</span><input type="email" id="am-email" inputmode="email" autocapitalize="off"></label>
+      <label class="field"><span>Member type</span><select id="am-type"><option value="">Choose one</option>${MEMBER_TYPES.map(t=>`<option>${t}</option>`).join("")}</select></label>
+      <label class="field"><span>Station</span><input type="text" id="am-station"></label>
+      <label class="field"><span>Hire date</span><input type="date" id="am-hire"></label>
+      <fieldset class="field assign" style="grid-column:1/-1"><legend>Assignments</legend>${ASSIGNMENTS.map(([k,l])=>`<label class="chk"><input type="checkbox" data-am-assign="${k}"><span>${l}</span></label>`).join("")}</fieldset>
+      <div class="actions" style="grid-column:1/-1"><button class="btn primary" type="submit">Add to department list</button></div>
+      <p class="sub" style="grid-column:1/-1">When they sign up with this email, their profile fills in from here. Aladtec imports keep members you add here.</p>
+    </form></div>`:`<p><button class="btn" type="button" data-addm="1">+ Add a member</button></p>`}
     <div class="search"><input type="search" id="dept-q" placeholder="Search name, code, station" aria-label="Search department list" value="${esc(deptQ)}"></div>
     ${L.length?`<div class="list">${L.map(r=>{ const m = signed.get(r.id); const sub = [r.code, r.memberType, ...(r.assign||[]).map(k=>(ASSIGNMENTS.find(a=>a[0]===k)||[,k])[1]), r.station&&"Stn "+r.station, r.hire&&"Hired "+fmtDate(r.hire), !r.email&&"No email in Aladtec"].filter(Boolean).map(esc).join(" · ");
       return m ? `<a class="row-btn" href="#member-${esc(m.id)}" style="--c:var(--s4)"><span class="n">✓</span><span class="m"><b>${esc(r.name)}</b><small>${sub}</small></span><span class="chev">›</span></a>`
@@ -317,7 +347,7 @@ function vDept(head, F){
 function meRef(uid){ return db.collection("members").doc(uid||me.uid); }
 async function ensureMe(){
   if (me.doc) return;
-  const base = {name:"", rank:"", memberType:"", assign:[], station:"", empId:"", designation:"Firefighter", created: today()};
+  const base = {name: APP ? (me.acct||"") : "", rank:"", memberType:"", assign:[], station:"", empId:"", designation:"Firefighter", created: today()};
   await meRef().set(base); me.doc = base;
 }
 function softRender(){
@@ -526,6 +556,7 @@ function vMember(uid){
         return `<div class="rowx"><div><b>${l} ${c.held?(on?`<span class="pill ok">Verified</span>`:`<span class="pill warn">Member says yes</span>`):""}</b><small>${c.held?(c.date?"Certified "+fmtDate(c.date):"No date")+(c.number?" · #"+esc(c.number):""):"Not on record"}</small></div><button class="btn sm" type="button" data-certv="${esc(m.id)}" data-k="${k}" data-on="${on?0:1}">${on?"Turn off":"Turn on"}</button></div>`; }).join("")}
       <div class="tbl"><span><b>CE, year ending Oct 31, ${ceNow()}</b></span><span>${sffmaCe(memberView.hours, ceNow())}${ceTarget()?" / "+ceTarget():""} hrs (previous year ${sffmaCe(memberView.hours, ceNow()-1)})</span></div>
     </div></div>
+    ${APP?(()=>{ startTb(); const L = (tbm&&tbm.list||[]).filter(t=>t.uid===m.id); return `<div class="card"><div class="card-h"><h3>Task books</h3></div><div class="card-b">${L.length?L.map(t=>`<div class="rowx"><div><b>${esc(t.book&&t.book.title||"Task book")}</b><small>${tbStatus(t)} · ${tbPct(t)}%${t.archived?" · archived":""}</small></div><a class="btn sm" href="tb/?code=${esc(t.code)}&from=hub" target="_blank" rel="noopener">Open</a></div>`).join(""):`<p class="sub">No task book assigned. Assign one in the Task Book Hub using the email they signed up with.</p>`}</div></div>`; })():""}
     ${APP?`<div class="card"><div class="card-h"><h3>Access to restricted content</h3></div><div class="card-b">
       <div class="rowx"><div><b>Officer ${m.officer&&m.officer.link?`<span class="pill ok">On</span>`:""}</b><small>Officer Review tile on the Field Guide home</small></div><button class="btn sm" type="button" data-officer="${esc(m.id)}" data-on="${m.officer&&m.officer.link?0:1}">${m.officer&&m.officer.link?"Turn off":"Turn on"}</button></div>
       <div class="rowx"><div><b>Training Division cadre ${memberRole[m.id]==="cadre"||memberRole[m.id]==="admin"?`<span class="pill ok">On</span>`:""}</b><small>${memberRole[m.id]==="admin"?"Admin: full access":"Cadre tab, TD dashboard, Cadre Material, member roster, edit content"}</small></div>${isAdmin&&memberRole[m.id]!=="admin"?`<button class="btn sm" type="button" data-cadre="${esc(m.id)}" data-on="${memberRole[m.id]==="cadre"?0:1}">${memberRole[m.id]==="cadre"?"Turn off":"Turn on"}</button>`:`<small>${isAdmin?"":"Admin only"}</small>`}</div>
@@ -639,6 +670,7 @@ function vTd(){
     <div class="card"><div class="card-h"><h3>Probationary / taskbooks</h3></div><div class="card-b">${metricGrid(M.probie)}
       ${soon.length?`<h4>Phases due in the next 45 days</h4>${soon.map(x=>`<div class="rowx"><a href="#" data-td-edit="probation" data-id="${esc(x.r.id)}" style="text-decoration:none;color:inherit"><div><b>${esc(x.r.name)}</b><small>Phase ${x.n} due ${fmtDate(x.r["p"+x.n+"due"])} · ${x.d} days</small></div></a><button class="btn sm" type="button" data-td-set="probation" data-id="${esc(x.r.id)}" data-f="p${x.n}" data-v="Completed">Phase ${x.n} done</button></div>`).join("")}`:""}
     </div></div>
+    ${APP?vTbCard():""}
     ${vTdMembers()}
     <div class="card"><div class="card-h"><h3>Quick review</h3></div><div class="card-b">
       <div class="tbl"><span><b>TCFP TPA</b></span><span>Any course approaching start without approval?</span></div>
@@ -717,6 +749,7 @@ function vHomeTdGroups(){
     <div class="group"><h2>My Training</h2>
       <div class="tiles">
         <a class="tile" href="#me" style="--c:var(--s2)"><b>My Training Record</b><span>Certifications, ISO hours, phase book progress</span></a>
+        ${APP?`<a class="tile" href="tb/" style="--c:var(--s2)"><b>My Task Books</b><span>Phase books assigned to you: fill in, sign, submit</span></a>`:""}
         ${!APP&&me.doc&&me.doc.officer&&me.doc.officer.link?`<a class="tile" href="#officer" style="--c:var(--s5)"><b>Officer Review</b><span>Sign off and approve member task books</span></a>`:""}
         ${APP?"":`<a class="tile" href="${GUIDE_APP}" target="_blank" rel="noopener" style="--c:var(--s3)"><b>CVFD Field Guide ↗</b><span>SOGs, pump chart, size-up, department tools</span></a>`}
       </div>
@@ -724,6 +757,7 @@ function vHomeTdGroups(){
     ${canEdit?`<div class="group"><h2>Cadre (staff only)</h2><div class="tiles">
         ${APP?`<a class="tile" href="#cadre" style="--c:var(--s5)"><b>Weekly Check-In</b><span>This week's events, testing, tasks</span></a>`:`<a class="tile" href="${CK_APP}" target="_blank" rel="noopener" style="--c:var(--s5)"><b>Weekly Check-In ↗</b><span>Its own app now: events, testing, tasks</span></a>`}
         <a class="tile" href="#td" style="--c:var(--s5)"><b>TD Master Dashboard</b><span>Courses, actions, probation, taskbooks</span></a>
+        ${APP?`<a class="tile" href="tb/hub.html" style="--c:var(--s5)"><b>Task Book Hub</b><span>Assign books, review and approve phases</span></a>`:""}
         ${APP?"":`<a class="tile" href="#tddoc-officer-review" style="--c:var(--s5)"><b>Officer Review</b><span>Sign off and approve member task books</span></a>`}
         <a class="tile" href="#td-docs" style="--c:var(--s5)"><b>Cadre Material</b><span>Staff-only documents</span></a>
         <a class="tile" href="#roster" style="--c:var(--s5)"><b>Member Roster${(startRoster(), roster&&roster.ready&&roster.list.filter(needsReview).length)?` <span class="pill bad">${roster.list.filter(needsReview).length} new</span>`:""}</b><span>Live member records: profiles, certs, hours, books</span></a>
@@ -755,7 +789,7 @@ function vHome(){
         <a class="tile" href="#extrication" style="--c:var(--s2)"><b>Vehicle Extrication</b><span>6 crash scenes, 4 views each, decision cards</span></a>
         <a class="tile" href="#grips" style="--c:var(--s3)"><b>Hoseline Grips</b><span>Hip grip, clamp, crooked lean, Comella lock, backup</span></a>
         <a class="tile" href="#drills" style="--c:var(--s4)"><b>5-Minute Drills</b><span>100 quick station-level drills, by topic</span></a>
-        ${APP && (canEdit || (me.doc&&me.doc.officer&&me.doc.officer.link)) ? `<a class="tile" href="${canEdit && !(me.doc&&me.doc.officer&&me.doc.officer.link) ? "#tddoc-officer-review" : "#officer"}" style="--c:var(--s5)"><b>Officer Review 🔒</b><span>Station officers: sign off and approve member task books</span></a>` : ""}
+        ${APP && (canEdit || (me.doc&&me.doc.officer&&me.doc.officer.link)) ? `<a class="tile" href="tb/officers.html" style="--c:var(--s5)"><b>Officer Review 🔒</b><span>Station officers: sign off and approve member task books</span></a>` : ""}
         ${store.sections.filter(s=>s.area==="suppression").map(c=>`<a class="tile" href="#cat-${esc(c.id)}" style="--c:var(--s1)"><b>${esc(c.title)}</b><span>${esc(c.blurb||"")}</span></a>`).join("")}
       </div>
       ${editing?`<button class="btn" type="button" data-act="new-supp">+ Add Fire Suppression category</button>`:""}
@@ -1413,6 +1447,7 @@ view.addEventListener("click", e => {
   const rv = e.target.closest("[data-review]"); if (rv) { rv.disabled = true; db.collection("members").doc(rv.dataset.review).update({reviewedAt: nowIso()}).then(()=>toast("Marked reviewed"), ()=>{ rv.disabled=false; toast("Could not save."); }); return; }
   const sb = e.target.closest("[data-start-book]"); if (sb) { startBook(sb.dataset.startBook, sb.dataset.tag).then(()=>render()); return; }
   const yr = e.target.closest("[data-year]"); if (yr) { hoursYear = +yr.dataset.year; render(); return; }
+  const adm = e.target.closest("[data-addm]"); if (adm) { addMemberOpen = adm.dataset.addm==="1"; render(); return; }
   const rmo = e.target.closest("[data-rmode]"); if (rmo) { rosterMode = rmo.dataset.rmode; render(); return; }
   const rf = e.target.closest("[data-rfilter]"); if (rf) { rosterFilter = rf.dataset.rfilter; render(); return; }
   const dh = e.target.closest("[data-del-hours]"); if (dh) { delHours(dh.dataset.delHours); return; }
@@ -1430,6 +1465,12 @@ view.addEventListener("click", e => {
   if (act==="new-sizeup") return save("sections", null, {area:"sizeup", title:"First-In Size-Up", blurb:"", order:0});
 });
 view.addEventListener("submit", async e => {
+  if (e.target.id==="addm") { e.preventDefault(); const f = e.target, g = id => String((f.querySelector("#"+id)||{}).value||"").trim();
+    const first = g("am-first"), last = g("am-last"), email = g("am-email").toLowerCase(); if (!first || !last) return;
+    const id = email && /^[^\s/@]+@[^\s/]+$/.test(email) ? email : "noemail-" + (last+"-"+first).toLowerCase().replace(/[^a-z0-9]+/g,"-");
+    const rec = {name: first+" "+last, first, last, code:"", email, memberType: g("am-type"), assign: [...f.querySelectorAll("[data-am-assign]")].filter(x=>x.checked).map(x=>x.dataset.amAssign), station: g("am-station"), hire: g("am-hire"), group: "Added by hand", empType: "", importedAt: Date.now(), manual: true};
+    try { await db.collection("roster").doc(id).set(rec); f.reset(); toast("Added "+rec.name); } catch(err) { toast("Could not save."); }
+    return; }
   const f = e.target; if (!["pf","hf","cf","sf"].includes(f.id)) return;
   e.preventDefault();
   const vals = Object.fromEntries([...f.querySelectorAll("input,select,textarea")].filter(el=>el.id).map(el=>[el.id, el.type==="checkbox" ? (el.checked?"1":"") : String(el.value||"").trim()]));

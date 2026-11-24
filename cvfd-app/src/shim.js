@@ -109,6 +109,7 @@
       role === "admin" ? h("button", { class: "cv-btn alt", type: "button", text: "Manage member roles", onclick: rolesSheet }) : null,
       role === "admin" ? h("button", { class: "cv-btn alt", type: "button", text: "Load starting data", onclick: seedSheet }) : null,
       STAFF.includes(role) ? h("button", { class: "cv-btn alt", type: "button", text: "Import member list (Aladtec)", onclick: rosterSheet }) : null,
+      role === "admin" ? h("button", { class: "cv-btn alt", type: "button", text: "Download full backup", onclick: backupAll }) : null,
       h("a", { class: "cv-link", href: "privacy.html", style: "display:block", text: "Privacy policy" }),
       h("button", { class: "cv-link", type: "button", text: "Delete my account", onclick: () => {
         const ok = h("button", { class: "cv-btn bad", type: "button", text: "Yes, delete my account and training record", onclick: async () => {
@@ -153,7 +154,7 @@
     return paths.length;
   }
   async function seedSheet() {
-    const st = h("p", { text: "Step 1 loads the Field Guide content (Must Knows, Ref, size-up scripts, department tools). Step 2 loads the file you saved with Export data file on the TD Master Dashboard in the claude.ai Training Division app: training, academy, dashboard sheets and Cadre Material. Safe to run again: it overwrites with the same data." });
+    const st = h("p", { text: "Step 1 loads the Field Guide content (Must Knows, Ref, size-up scripts, department tools). Step 2 loads the file you saved with Export data file on the TD Master Dashboard in the claude.ai Training Division app: training, academy, dashboard sheets and Cadre Material. Step 3 loads the task books (taskbook-library.json). Safe to run again: it overwrites with the same data." });
     const finish = n => { st.textContent = `Done. Loaded ${n} records.`; };
     const guideBtn = h("button", { class: "cv-btn", type: "button", text: "1. Load Field Guide content", onclick: async () => {
       guideBtn.disabled = true;
@@ -177,8 +178,43 @@
       file.value = "";
     } });
     const tdBtn = h("button", { class: "cv-btn", type: "button", text: "2. Load Training Division file", onclick: () => file.click() });
-    showOverlay(h("div", { class: "cv-card" }, h("h1", { text: "Load starting data" }), st, guideBtn, tdBtn, file,
+    const lib = h("input", { type: "file", accept: ".json,application/json", style: "display:none", onchange: async () => {
+      const f = lib.files && lib.files[0]; if (!f) return;
+      try {
+        const j = JSON.parse(await f.text());
+        if (!j || !j.cvfdTaskbookLibrary || !Array.isArray(j.books)) throw { message: "That isn't the task book library file." };
+        const b = fs.batch();
+        j.books.forEach((bk, i) => { if (bk && /^[a-z0-9-]{1,80}$/.test(bk.id)) b.set(fs.collection("tbLibrary").doc(bk.id), { id: bk.id, title: String(bk.title || ""), order: bk.order != null ? bk.order : i, json: JSON.stringify(bk) }); });
+        await b.commit();
+        st.textContent = `Done. Loaded ${j.books.length} task books.`;
+      } catch (e) { st.textContent = errText(e); }
+      lib.value = "";
+    } });
+    const libBtn = h("button", { class: "cv-btn", type: "button", text: "3. Load task book library", onclick: () => lib.click() });
+    showOverlay(h("div", { class: "cv-card" }, h("h1", { text: "Load starting data" }), st, guideBtn, tdBtn, file, libBtn, lib,
       h("button", { class: "cv-btn alt", type: "button", text: "Done", onclick: () => { closeOverlay(); location.reload(); } })));
+  }
+  /* ---------- full backup: every collection the site uses, with member and task book subcollections ---------- */
+  async function backupAll(ev) {
+    const btn = ev && ev.target; if (btn) { btn.disabled = true; btn.textContent = "Building backup…"; }
+    try {
+      const out = {};
+      const grab = async (col, subs) => {
+        const s = await fs.collection(col).get();
+        for (const d of s.docs) {
+          out[col + "/" + d.id] = d.data();
+          for (const sub of subs || []) { const ss = await d.ref.collection(sub).get(); ss.docs.forEach(x => { out[col + "/" + d.id + "/" + sub + "/" + x.id] = x.data(); }); }
+        }
+      };
+      await grab("users"); await grab("members", ["certs", "hours", "books"]); await grab("roster"); await grab("config");
+      await grab("sections"); await grab("items"); await grab("tools");
+      await grab("td"); for (const k of ["courses", "actions", "cadets", "probation", "books", "docs", "taskbook"]) { const s = await fs.collection("td").doc("main").collection(k).get(); s.docs.forEach(x => { out["td/main/" + k + "/" + x.id] = x.data(); }); }
+      await grab("weeks", ["events", "roles", "testing", "tasks", "updates"]);
+      await grab("tbLibrary"); await grab("tbCustom"); await grab("tbMembers"); await grab("tbBooks", ["sigs"]);
+      await downloads.save({ filename: "cvfd-full-backup-" + new Date().toISOString().slice(0, 10) + ".json", data: new Blob([JSON.stringify({ cvfdBackup: 1, at: new Date().toISOString(), docs: out })], { type: "application/json" }) });
+      toastMsg(Object.keys(out).length + " records saved");
+    } catch (e) { toastMsg(errText(e)); }
+    if (btn) { btn.disabled = false; btn.textContent = "Download full backup"; }
   }
   /* ---------- department list from an Aladtec "Member List" CSV export ---------- */
   function parseCsv(text) {
@@ -218,14 +254,14 @@
     return out;
   }
   async function rosterSheet() {
-    const st = h("p", { text: "In Aladtec: Members › Member List, filter Status is Active, export as CSV. Pick that file here. It replaces the department list: people no longer on it are removed. Only staff can see the list; each member can see only their own entry, which fills in their profile when they sign up with the same email. Phone numbers are not imported." });
+    const st = h("p", { text: "In Aladtec: Members › Member List, filter Status is Active, export as CSV. Pick that file here. It replaces the department list: people no longer on it are removed (members you added by hand are kept). Only staff can see the list; each member can see only their own entry, which fills in their profile when they sign up with the same email. Phone numbers are not imported." });
     const file = h("input", { type: "file", accept: ".csv,text/csv", style: "display:none", onchange: async () => {
       const f = file.files && file.files[0]; if (!f) return;
       try {
         const data = rosterFromCsv(await f.text()); const ids = Object.keys(data);
         if (!ids.length) throw { message: "No members found in that file." };
         st.textContent = `Found ${ids.length} members. Saving…`;
-        const old = (await fs.collection("roster").get()).docs.map(d => d.id).filter(id => !(id in data));
+        const old = (await fs.collection("roster").get()).docs.filter(d => !d.data().manual).map(d => d.id).filter(id => !(id in data));
         const ops = [...ids.map(id => b => b.set(fs.collection("roster").doc(id), data[id])), ...old.map(id => b => b.delete(fs.collection("roster").doc(id)))];
         for (let i = 0; i < ops.length; i += 400) { const b = fs.batch(); ops.slice(i, i + 400).forEach(op => op(b)); await b.commit(); }
         const by = t => ids.filter(id => data[id].memberType === t).length;
@@ -333,6 +369,7 @@
   auth.onAuthStateChanged(async u => {
     if (!u) { if (booted) location.reload(); else { const go = () => signInScreen("in"); document.readyState === "loading" ? document.addEventListener("DOMContentLoaded", go) : go(); } return; }
     fbUser = u; booted = true;
+    { const nx = new URLSearchParams(location.search).get("next"); if (nx && /^tb\/[\w./?=&#%-]*$/.test(nx)) { location.replace(nx); return; } }
     const ref = fs.collection("users").doc(u.uid);
     const cached = (() => { try { return JSON.parse(localStorage.getItem("cvfd.profile." + u.uid) || "null"); } catch (e) { return null; } })();
     try {

@@ -9,6 +9,10 @@ subprocess.check_call([sys.executable, os.path.join(M, 'tools', 'build.py')])
 shutil.rmtree(OUT, ignore_errors=True)
 # eo-phase-book.pdf stays out: the site is public and the book view doesn't use the PDF.
 shutil.copytree(WWW, OUT, ignore=shutil.ignore_patterns('eo-phase-book.pdf', 'seed.json'))
+# Task books (book page, hub, officer review) live in the private cvfd-taskbooks repo, branch firebase-site.
+TB = os.environ.get('CVFD_TASKBOOKS', os.path.join(M, '..', '..', 'cvfd-taskbooks', 'site-tb'))
+if os.path.isdir(TB): shutil.copytree(TB, os.path.join(OUT, 'tb'))
+else: print('note: task books not included (no', TB, ')')
 for f in os.listdir(os.path.join(M, 'resources', 'web')):
     shutil.copy(os.path.join(M, 'resources', 'web', f), os.path.join(OUT, f))
 json.dump({"name": "CVFD", "short_name": "CVFD", "start_url": "/", "display": "standalone",

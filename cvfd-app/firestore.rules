@@ -10,6 +10,13 @@ service cloud.firestore {
     }
     function staff() { return role() in ['cadre', 'admin']; }
     function admin() { return role() == 'admin'; }
+    // A station officer verified by the Training Division (members/{uid}.officer.link is set by staff only).
+    function officer() {
+      return signedIn() && exists(/databases/$(database)/documents/members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/members/$(request.auth.uid)).data.get('officer', null) != null
+        && get(/databases/$(database)/documents/members/$(request.auth.uid)).data.officer.get('link', '') != '';
+    }
+    function myEmail() { return signedIn() && request.auth.token.email != null ? request.auth.token.email.lower() : ''; }
 
     // Accounts. A new account can only make itself a member; only an admin changes roles.
     match /users/{uid} {
@@ -38,6 +45,46 @@ service cloud.firestore {
 
     // Site settings (CE hours target): everyone signed in reads, staff set.
     match /config/{id} { allow read: if signedIn(); allow write: if staff(); }
+
+    // ---------- Task books ----------
+    // Book content: anyone signed in can open a book by id (the book page needs it); only staff and officers list them.
+    match /tbLibrary/{id} { allow get: if signedIn(); allow list: if staff() || officer(); allow write: if staff(); }
+    match /tbCustom/{id}  { allow get: if signedIn(); allow list: if staff() || officer(); allow write: if staff(); }
+
+    // One assignment per code. Staff manage them; officers approve or return phases; the member who owns it
+    // (uid, or their sign-in email until they first open it) saves progress and submits one phase at a time.
+    match /tbMembers/{code} {
+      function keep(keys) { return !request.resource.data.diff(resource.data).affectedKeys().hasAny(keys); }
+      function ownsIt() { return signedIn() && resource.data.get('uid', null) == request.auth.uid; }
+      function claimsIt() {
+        return signedIn() && resource.data.get('uid', null) == null && myEmail() != '' && resource.data.get('email', '') == myEmail()
+          && request.resource.data.uid == request.auth.uid;
+      }
+      function phaseOk() {
+        let ch = request.resource.data.phases.diff(resource.data.phases).affectedKeys();
+        let p = request.resource.data.get('submitting', '');
+        return ch.size() == 0 || (ch.size() == 1 && ch.hasOnly([p])
+          && request.resource.data.phases[p].status == 'submitted'
+          && resource.data.phases[p].status in ['open', 'returned']);
+      }
+      allow get: if signedIn();
+      allow list: if staff() || officer() || (signedIn() && (resource.data.get('uid', null) == request.auth.uid || resource.data.get('email', '') == myEmail()));
+      allow create, delete: if staff();
+      allow update: if staff()
+        || (officer() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['phases', 'summary', 'lastActivity', 'displayName']))
+        || ((ownsIt() || claimsIt()) && keep(['code', 'book', 'email', 'archived', 'name', 'assignedAt', 'notes', 'deleted']) && phaseOk());
+    }
+    // Entries and signatures for one assignment: its owner, officers (they sign on the member's book) and staff.
+    match /tbBooks/{code} {
+      function writer() {
+        return staff() || officer()
+          || (signedIn() && get(/databases/$(database)/documents/tbMembers/$(code)).data.get('uid', null) == request.auth.uid);
+      }
+      allow get: if signedIn();
+      allow list: if staff();
+      allow write: if writer();
+      match /sigs/{k} { allow read: if signedIn(); allow write: if writer(); }
+    }
 
     // Member training records: the member and staff.
     // Members cannot mark themselves as a verified officer or as reviewed: only staff set those.
