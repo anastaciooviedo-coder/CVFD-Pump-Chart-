@@ -226,7 +226,23 @@ async function initMe(user){
 const RANKS = ["Cadet","Probationary Firefighter","Firefighter","Engine Operator","Lieutenant","Captain","Battalion Chief","Deputy / Assistant Chief","Fire Chief"];
 const MEMBER_TYPES = ["Volunteer","Duty Crew"];
 const ASSIGNMENTS = [["specops","Special Operations"],["td","Training Division"]];
-function memberTags(m){ return [m.memberType, ...(m.assign||[]).map(k=>(ASSIGNMENTS.find(a=>a[0]===k)||[,k])[1])].filter(Boolean); }
+function memberTags(m){ return [m.officer&&m.officer.link?"Verified officer":"", m.memberType, ...(m.assign||[]).map(k=>(ASSIGNMENTS.find(a=>a[0]===k)||[,k])[1])].filter(Boolean); }
+async function officerCopy(){
+  const d = await db.collection("td").doc("main").collection("docs").doc("officer-review").get();
+  const r = d.exists ? d.data() : null; const link = r && (String(r.body||"").match(/https:\/\/[^\s)]+/)||[])[0];
+  if (!link) throw new Error("no link");
+  return {title: r.title||"Officer Review", body: r.body||"", link, at: nowIso()};
+}
+function vOfficer(){
+  const o = me.doc && me.doc.officer;
+  const head = `<a class="sub" href="#home">‹ Home</a>`;
+  if (!me.ready) return `<section class="view">${head}<p class="sub">Loading…</p></section>`;
+  if (!o || !o.link) return `<section class="view">${head}<div class="empty">Officer Review is for station officers verified by the Training Division.</div></section>`;
+  const html = renderBody(o.body, "officer", false);
+  return `<section class="view">${head}<div class="doc-h"><span class="num">Station officers only</span><h1>${esc(o.title)}</h1></div>
+    <div class="actions" style="justify-content:flex-start"><a class="btn primary" href="${esc(o.link)}" target="_blank" rel="noopener">Open Officer Review ↗</a></div>
+    ${tocFor(html)}<div class="doc body">${html}</div></section>`;
+}
 function meRef(uid){ return db.collection("members").doc(uid||me.uid); }
 async function ensureMe(){
   if (me.doc) return;
@@ -420,6 +436,7 @@ function vMember(uid){
   return `<section class="view" style="--c:var(--s4)">${head}
     <div class="doc-h"><span class="num">${esc([m.rank, m.station].filter(Boolean).join(" · ")||"Member")}</span><h1>${esc(memberName(m))}</h1><span class="meta">${esc([...memberTags(m), (m.designation||"Firefighter")+" (ISO)"].join(" · "))}${m.empId?" · ID "+esc(m.empId):""}</span></div>
     <div class="card"><div class="card-b"><div class="rowx"><div><b>${needsReview(m)?`<span class="pill bad">New changes</span> `:`<span class="pill ok">Reviewed</span> `}${esc(m.lastChange||"No changes logged yet")}</b><small>${m.updatedAt?"Last update "+esc(ago(m.updatedAt)):""}${m.reviewedAt?" · Reviewed "+esc(ago(m.reviewedAt)):""}</small></div>${needsReview(m)?`<button class="btn sm primary" type="button" data-review="${esc(m.id)}">Mark reviewed</button>`:""}</div></div></div>
+    <div class="card"><div class="card-b"><div class="rowx"><div><b>${m.officer&&m.officer.link?`<span class="pill ok">Verified officer</span>`:"Officer Review access"}</b><small>${m.officer&&m.officer.link?"Sees the Officer Review tile. Verified "+esc(ago(m.officer.at)):"Verify only real station officers. It gives them the officer review link."}</small></div><button class="btn sm ${m.officer&&m.officer.link?"":"primary"}" type="button" data-officer="${esc(m.id)}" data-on="${m.officer&&m.officer.link?"0":"1"}">${m.officer&&m.officer.link?"Remove":"Verify officer"}</button></div></div></div>
     <div class="card"><div class="card-h"><h3>ISO hours ${y}</h3></div><div class="card-b">
       <div class="prog"><div class="ph"><b>${T.applied} of ${T.req} hrs</b><span>${T.pct}%</span></div>${bar(T.pct)}</div>
       ${ISO_CATS.filter(([k])=>T.need.includes(k)||T.by[k]).map(([k,l,t])=>`<div class="tbl"><span>${l}</span><span>${T.by[k]}${t&&T.need.includes(k)?" / "+t:""} hrs</span></div>`).join("")}
@@ -560,7 +577,8 @@ function vTdDoc(id){
   if (!r) return `<section class="view">${head}<div class="empty">That document was removed.</div></section>`;
   return `<section class="view">${head}<div class="doc-h"><span class="num">Cadre only</span><h1>${esc(r.title)}</h1>${r.updatedAt?`<span class="meta">Updated ${fmtDate(r.updatedAt)}</span>`:""}</div>
     <div class="doc body">${renderBody(r.body||"", "tddoc-"+r.id, false)}</div>
-    <div class="actions" style="justify-content:flex-start"><button class="btn sm" type="button" data-td-edit="docs" data-id="${esc(r.id)}">Edit</button></div></section>`;
+    <div class="actions" style="justify-content:flex-start"><button class="btn sm" type="button" data-td-edit="docs" data-id="${esc(r.id)}">Edit</button>${r.id==="officer-review"?`<button class="btn sm" type="button" data-officer-sync>Send changes to verified officers</button>`:""}</div>
+    ${r.id==="officer-review"?`<p class="sub">Verified officers get their own copy of this page and link. After you edit it or change the link, tap Send changes. Verify officers from their page in the Member roster.</p>`:""}</section>`;
 }
 // ---------- views ----------
 function vHomeTd(){ return `<section class="view">${vHomeTdGroups()}</section>`; }
@@ -570,6 +588,7 @@ function vHomeTdGroups(){
     <div class="group"><h2>My Training</h2>
       <div class="tiles">
         <a class="tile" href="#me" style="--c:var(--s2)"><b>My Training Record</b><span>Certifications, ISO hours, phase book progress</span></a>
+        ${me.doc&&me.doc.officer&&me.doc.officer.link?`<a class="tile" href="#officer" style="--c:var(--s5)"><b>Officer Review</b><span>Sign off and approve member task books</span></a>`:""}
         ${APP?"":`<a class="tile" href="${GUIDE_APP}" target="_blank" rel="noopener" style="--c:var(--s3)"><b>CVFD Field Guide ↗</b><span>SOGs, pump chart, size-up, department tools</span></a>`}
       </div>
     </div>
@@ -1141,6 +1160,7 @@ function route(){
   else if (h==="academy") { html = vAcademy(); tab="academy"; }
   else if ((m = h.match(/^class-(.+)$/))) { html = vClass(m[1]); tab="academy"; }
   else if (h==="me") { html = vMe(); tab="home"; }
+  else if (h==="officer") { html = vOfficer(); tab="home"; }
   else if (h==="td") { html = vTd(); tab="cadre"; }
   else if ((m = h.match(/^tddoc-(.+)$/))) { html = vTdDoc(m[1]); tab="cadre"; }
   else if ((m = h.match(/^td-(.+)$/))) { html = vTdTable(m[1]); tab="cadre"; }
@@ -1218,6 +1238,15 @@ view.addEventListener("click", e => {
   const tde = e.target.closest("[data-td-edit]"); if (tde) { e.preventDefault(); const r = (td.rows[tde.dataset.tdEdit]||[]).find(x=>x.id===tde.dataset.id); if (r) openTdEditor(tde.dataset.tdEdit, r); return; }
   const tdn = e.target.closest("[data-td-new]"); if (tdn) { openTdEditor(tdn.dataset.tdNew, {}); return; }
   const tdr = e.target.closest("[data-td-review]"); if (tdr) { db.collection("td").doc("main").set({...(td.main||{}), lastReview: today()}).then(()=>toast("Review recorded"), ()=>toast("Could not save.")); return; }
+  const ob = e.target.closest("[data-officer]"); if (ob) { ob.disabled = true; (async()=>{ try {
+      const on = ob.dataset.on==="1"; await db.collection("members").doc(ob.dataset.officer).update({officer: on ? await officerCopy() : null});
+      toast(on?"Verified as officer":"Officer access removed");
+    } catch(err) { ob.disabled=false; toast("Could not save. Check that the Officer Review doc has its link."); } })(); return; }
+  const os = e.target.closest("[data-officer-sync]"); if (os) { os.disabled = true; (async()=>{ try {
+      startRoster(); const c = await officerCopy(); const list = (roster&&roster.list||[]).filter(m=>m.officer&&m.officer.link);
+      for (const m of list) await db.collection("members").doc(m.id).update({officer: c});
+      toast(`Updated ${list.length} officer${list.length===1?"":"s"}`);
+    } catch(err) { toast("Could not update."); } os.disabled=false; })(); return; }
   const rv = e.target.closest("[data-review]"); if (rv) { rv.disabled = true; db.collection("members").doc(rv.dataset.review).update({reviewedAt: nowIso()}).then(()=>toast("Marked reviewed"), ()=>{ rv.disabled=false; toast("Could not save."); }); return; }
   const sb = e.target.closest("[data-start-book]"); if (sb) { startBook(sb.dataset.startBook, sb.dataset.tag).then(()=>render()); return; }
   const yr = e.target.closest("[data-year]"); if (yr) { hoursYear = +yr.dataset.year; render(); return; }
