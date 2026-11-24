@@ -229,20 +229,21 @@ async function initMe(user){
     const uid = await user.id();
     if (!uid) { me.noUser = true; render(); return; }
     me.uid = uid;
-    try { const v = await user.me(); me.acct = (v && v.name) || ""; } catch(e) {}
+    try { const v = await user.me(); me.acct = (v && v.name) || ""; me.email = (v && v.email) || ""; } catch(e) {}
     const ref = meRef(); let n = 4;
     const tick = () => { if (n > 0 && --n === 0) me.ready = true; if (me.ready) softRender(); };
     const fail = () => { me.failed = true; softRender(); };
-    ref.onSnapshot(s => { me.doc = s.exists ? s.data() : null; tick(); }, fail);
+    ref.onSnapshot(s => { me.doc = s.exists ? s.data() : null; tick(); if (APP && !s.metadata.hasPendingWrites) matchDept(); }, fail);
     ref.collection("certs").onSnapshot(s => { me.certs = s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(a.expires||"9").localeCompare(String(b.expires||"9"))); tick(); }, fail);
     ref.collection("hours").onSnapshot(s => { me.hours = s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(b.date).localeCompare(String(a.date))); tick(); }, fail);
     ref.collection("books").onSnapshot(s => { me.books = Object.fromEntries(s.docs.map(d=>[d.id,{id:d.id,...d.data()}])); tick(); }, fail);
   } catch(e) { me.failed = true; softRender(); }
 }
-const RANKS = ["Cadet","Probationary Firefighter","Firefighter","Engine Operator","Lieutenant","Captain","Battalion Chief","Deputy / Assistant Chief","Fire Chief"];
-const MEMBER_TYPES = ["Volunteer","Duty Crew"];
-const ASSIGNMENTS = [["specops","Special Operations"],["td","Training Division"]];
-function memberTags(m){ return [m.officer&&m.officer.link?"Verified officer":"", m.memberType, ...(m.assign||[]).map(k=>(ASSIGNMENTS.find(a=>a[0]===k)||[,k])[1])].filter(Boolean); }
+const RANKS = ["Cadet","Probationary Firefighter","Firefighter","Engine Operator","Lieutenant","Captain","Battalion Chief","Deputy / Assistant Chief","Fire Chief","EMT","Advanced EMT","Paramedic","EMS Supervisor"];
+const MEMBER_TYPES = ["Volunteer","Fire Duty Crew","EMS Duty Crew"];
+const ASSIGNMENTS = [["specops","Special Operations"],["td","Training Division"],["admin","Administrative"]];
+function typeOf(m){ return m.memberType==="Duty Crew" ? "Fire Duty Crew" : (m.memberType||""); }
+function memberTags(m){ return [m.officer&&m.officer.link?"Verified officer":"", typeOf(m), ...(m.assign||[]).map(k=>(ASSIGNMENTS.find(a=>a[0]===k)||[,k])[1])].filter(Boolean); }
 async function officerCopy(){
   const d = await db.collection("td").doc("main").collection("docs").doc("officer-review").get();
   const r = d.exists ? d.data() : null; const link = r && (String(r.body||"").match(/https:\/\/[^\s)]+/)||[])[0];
@@ -258,6 +259,42 @@ function vOfficer(){
   return `<section class="view">${head}<div class="doc-h"><span class="num">Station officers only</span><h1>${esc(o.title)}</h1></div>
     <div class="actions" style="justify-content:flex-start"><a class="btn primary" href="${esc(o.link)}" target="_blank" rel="noopener">Open Officer Review ↗</a></div>
     ${tocFor(html)}<div class="doc body">${html}</div></section>`;
+}
+// Department list (imported from Aladtec on the web site, staff only). A member whose sign-in email
+// matches an entry gets the blanks in their profile filled from it, once.
+let deptTried = false;
+async function matchDept(){
+  if (deptTried || !me.email || (me.doc && me.doc.rosterId)) return; deptTried = true;
+  try {
+    const d = await db.collection("roster").doc(me.email.toLowerCase()).get(); if (!d.exists) return;
+    const r = d.data(), cur = me.doc || {}, put = {rosterId: d.id};
+    for (const k of ["name","memberType","station","hire","code"]) if (r[k] && !cur[k]) put[k] = r[k];
+    if ((r.assign||[]).length && !(cur.assign||[]).length) put.assign = r.assign;
+    if (!me.doc) Object.assign(put, {rank:"", empId:"", designation:"Firefighter", created: today(), assign: put.assign||[]});
+    await meRef().set(put, {merge:true});
+  } catch(e) {}
+}
+let dept = null, rosterMode = "signed", deptQ = "";
+function startDept(){
+  if (dept || !APP || !db || !canEdit) return;
+  dept = {list:[], ready:false, failed:false};
+  db.collection("roster").onSnapshot(s => { dept.list = s.docs.map(d=>({id:d.id, ...d.data()})); dept.ready = true; softRender(); }, () => { dept.failed = true; softRender(); });
+}
+function vDept(head, F){
+  if (!dept || !dept.ready) return `<section class="view">${head}<p class="sub">${dept&&dept.failed?"The department list could not load.":"Loading…"}</p></section>`;
+  const signed = new Map((roster&&roster.list||[]).filter(m=>m.rosterId).map(m=>[m.rosterId,m]));
+  const q = deptQ.trim().toLowerCase();
+  const L = dept.list.filter(r => (F==="all" || r.memberType===F || (r.assign||[]).includes(F)) && (!q || [r.name,r.code,r.email,r.station,r.group].some(x=>String(x||"").toLowerCase().includes(q))))
+    .sort((a,b)=>String(a.last||a.name).localeCompare(String(b.last||b.name)));
+  const nSigned = dept.list.filter(r=>signed.has(r.id)).length;
+  return `<section class="view">${head}
+    <p class="sub">${dept.list.length} active members from Aladtec · ${nSigned} signed up. Members match by the email Aladtec has for them.</p>
+    <div class="chips" role="group" aria-label="Filter">${[["all","All"],...MEMBER_TYPES.map(t=>[t,t]),...ASSIGNMENTS].map(([k,l])=>`<button class="chip" type="button" data-rfilter="${esc(k)}" aria-pressed="${F===k}">${esc(l)} ${k==="all"?dept.list.length:dept.list.filter(r=>r.memberType===k||(r.assign||[]).includes(k)).length}</button>`).join("")}</div>
+    <div class="search"><input type="search" id="dept-q" placeholder="Search name, code, station" aria-label="Search department list" value="${esc(deptQ)}"></div>
+    ${L.length?`<div class="list">${L.map(r=>{ const m = signed.get(r.id); const sub = [r.code, r.memberType, ...(r.assign||[]).map(k=>(ASSIGNMENTS.find(a=>a[0]===k)||[,k])[1]), r.station&&"Stn "+r.station, r.hire&&"Hired "+fmtDate(r.hire), !r.email&&"No email in Aladtec"].filter(Boolean).map(esc).join(" · ");
+      return m ? `<a class="row-btn" href="#member-${esc(m.id)}" style="--c:var(--s4)"><span class="n">✓</span><span class="m"><b>${esc(r.name)}</b><small>${sub}</small></span><span class="chev">›</span></a>`
+               : `<div class="row-btn" style="--c:var(--line)"><span class="n">–</span><span class="m"><b>${esc(r.name)}</b><small>${sub} · not signed up yet</small></span></div>`; }).join("")}</div>`:`<div class="empty">${dept.list.length?"Nothing matches.":"No department list yet. Load it from the account button › Import member list."}</div>`}
+  </section>`;
 }
 function meRef(uid){ return db.collection("members").doc(uid||me.uid); }
 async function ensureMe(){
@@ -289,7 +326,7 @@ function vMe(){
       <label class="field"><span>Full name</span><input type="text" id="pf-name" value="${esc(p.name||"")}" placeholder="${esc(me.acct||"First and last name")}" autocomplete="name"></label>
       <div class="grid2">
         <label class="field"><span>Rank</span><select id="pf-rank"><option value="">Choose your rank</option>${[...RANKS, ...(p.rank&&!RANKS.includes(p.rank)?[p.rank]:[])].map(r=>`<option ${p.rank===r?"selected":""}>${esc(r)}</option>`).join("")}</select></label>
-        <label class="field"><span>Member type</span><select id="pf-memberType"><option value="">Choose one</option>${MEMBER_TYPES.map(r=>`<option ${p.memberType===r?"selected":""}>${r}</option>`).join("")}</select></label>
+        <label class="field"><span>Member type</span><select id="pf-memberType"><option value="">Choose one</option>${MEMBER_TYPES.map(r=>`<option ${typeOf(p)===r?"selected":""}>${r}</option>`).join("")}</select></label>
         <label class="field"><span>Station / shift</span><input type="text" id="pf-station" value="${esc(p.station||"")}"></label>
         <label class="field"><span>Employee ID</span><input type="text" id="pf-empId" value="${esc(p.empId||"")}"></label>
         <label class="field"><span>ISO designation</span><select id="pf-designation">${Object.keys(DESIG).map(d=>`<option ${ (p.designation||"Firefighter")===d?"selected":""}>${d}</option>`).join("")}</select></label>
@@ -415,18 +452,20 @@ function memberName(m){ return m.name || rosterNames[m.id] || "Member (no name y
 function vRoster(){
   if (!canEdit) return vCadreGate();
   startRoster();
-  const head = `${cadreNav("roster")}<div class="gh"><h2>Member roster</h2>${roster&&roster.ready?`<span class="sub">${roster.list.length} members</span>`:""}</div>`;
+  startDept();
+  const head = `${cadreNav("roster")}<div class="gh"><h2>Member roster</h2>${roster&&roster.ready?`<span class="sub">${roster.list.length} signed up</span>`:""}</div>${APP?`<div class="chips" role="tablist" aria-label="Roster view"><button class="chip" type="button" data-rmode="signed" aria-pressed="${rosterMode==="signed"}">Signed up</button><button class="chip" type="button" data-rmode="dept" aria-pressed="${rosterMode==="dept"}">Department list${dept&&dept.ready?" "+dept.list.length:""}</button></div>`:""}`;
   if (!roster || !roster.ready) return `<section class="view">${head}<p class="sub">${roster&&roster.failed?"The roster could not load.":"Loading…"}</p></section>`;
+  if (APP && rosterMode==="dept") return vDept(head, rosterFilter);
   const y = new Date().getFullYear();
-  const F = rosterFilter, match = m => F==="all" || m.memberType===F || (m.assign||[]).includes(F);
+  const F = rosterFilter, match = m => F==="all" || typeOf(m)===F || (m.assign||[]).includes(F);
   const list = [...roster.list].filter(match).sort((a,b)=>(needsReview(b)-needsReview(a)) || (needsReview(a)&&needsReview(b) ? String(b.updatedAt).localeCompare(String(a.updatedAt)) : memberName(a).localeCompare(memberName(b))));
   const nNew = list.filter(needsReview).length;
   const row = m => { const iso = m.iso && m.iso[y]; const bks = Object.values(m.books||{}); const exp = (m.certs||[]).filter(c=>certStatus(c)[1]!=="ok" && c.expires).length; return `<a class="row-btn" href="#member-${esc(m.id)}" style="--c:${needsReview(m)?"var(--red)":"var(--s4)"}"><span class="n">${iso?iso.pct+"%":"–"}</span><span class="m"><b>${esc(memberName(m))} ${needsReview(m)?`<span class="pill bad">New</span>`:""}</b><small>${m.lastChange?esc(m.lastChange)+" · "+esc(ago(m.updatedAt)):esc([m.rank,...memberTags(m),m.station].filter(Boolean).join(" · "))}${(m.certs||[]).length?" · "+(m.certs.length)+" certs"+(exp?` (${exp} expiring)`:""):""}${bks.length?" · "+bks.map(b=>esc(b.title)+" "+pct(b.done,b.total)+"%").join(", "):""}</small></span><span class="chev">›</span></a>`; };
   return `<section class="view">${head}
     <p class="sub">Updates live as members save their profile, certifications, hours and book sign-offs. ISO % is for ${y}.</p>
-    <div class="chips" role="group" aria-label="Filter">${[["all","All"],...MEMBER_TYPES.map(t=>[t,t]),...ASSIGNMENTS].map(([k,l])=>`<button class="chip" type="button" data-rfilter="${esc(k)}" aria-pressed="${F===k}">${esc(l)} ${k==="all"?roster.list.length:roster.list.filter(m=>m.memberType===k||(m.assign||[]).includes(k)).length}</button>`).join("")}</div>
+    <div class="chips" role="group" aria-label="Filter">${[["all","All"],...MEMBER_TYPES.map(t=>[t,t]),...ASSIGNMENTS].map(([k,l])=>`<button class="chip" type="button" data-rfilter="${esc(k)}" aria-pressed="${F===k}">${esc(l)} ${k==="all"?roster.list.length:roster.list.filter(m=>typeOf(m)===k||(m.assign||[]).includes(k)).length}</button>`).join("")}</div>
     ${nNew?`<p><span class="pill bad">${nNew} to review</span></p>`:""}
-    ${list.length?`<div class="list">${list.map(row).join("")}</div>`:`<div class="empty">No members have set up a record yet. Share the guide with members as Contributors ("can use") so they can.</div>`}
+    ${list.length?`<div class="list">${list.map(row).join("")}</div>`:`<div class="empty">${APP?"No members have signed up yet. Send them the site link.":"No members have set up a record yet. Share the guide with members as Contributors (\"can use\") so they can."}</div>`}
   </section>`;
 }
 function loadMember(uid){
@@ -514,7 +553,7 @@ function vTdMembers(){
   const head = `<div class="card-h"><h3>From member records</h3></div>`;
   if (!roster || !roster.ready) return `<div class="card">${head}<div class="card-b"><p class="sub">${roster&&roster.failed?"Member records could not load.":"Loading member records…"}</p></div></div>`;
   const L = roster.list, has = f => L.filter(f).length;
-  const grid = [["Members signed up", L.length],["Volunteer", has(m=>m.memberType==="Volunteer")],["Duty Crew", has(m=>m.memberType==="Duty Crew")],...ASSIGNMENTS.map(([k,l])=>[l, has(m=>(m.assign||[]).includes(k))]),["Verified officers", has(m=>m.officer&&m.officer.link)],["Waiting for your review", has(needsReview)],["No rank entered", has(m=>!m.rank)]];
+  const grid = [["Members signed up", L.length],...MEMBER_TYPES.map(t=>[t, has(m=>typeOf(m)===t)]),...ASSIGNMENTS.map(([k,l])=>[l, has(m=>(m.assign||[]).includes(k))]),["Verified officers", has(m=>m.officer&&m.officer.link)],["Waiting for your review", has(needsReview)],["No rank entered", has(m=>!m.rank)]];
   const ranks = RANKS.map(r=>[r, has(m=>m.rank===r)]).filter(x=>x[1]);
   const norm = x => String(x||"").toLowerCase().split(/[^a-z]+/).filter(Boolean).sort().join(" ");
   const tracked = new Set((td.rows.probation||[]).flatMap(r=>[r.memberId, norm(r.name)]).filter(Boolean));
@@ -1216,7 +1255,7 @@ function render(){
   $("#cadre-view").hidden = !showCadre; view.hidden = showCadre;
   if (showCadre && !cadreStarted && cadreCtx) { cadreStarted = true; try { initCadre(cadreCtx); } catch(err) { console.error(err); } }
   view.innerHTML = html;
-  if (active && (active==="sog-q"||active==="home-q"||active==="td-q")) { const el = $("#"+active); if (el) { el.focus(); try{ el.setSelectionRange(caret,caret); }catch(e){} } }
+  if (active && (active==="sog-q"||active==="home-q"||active==="td-q"||active==="dept-q")) { const el = $("#"+active); if (el) { el.focus(); try{ el.setSelectionRange(caret,caret); }catch(e){} } }
   if (h !== lastHash) {
     lastHash = h;
     const mm = h.match(/^sog-(\d{3})-(\d{2})$/);
@@ -1238,6 +1277,7 @@ view.addEventListener("input", e => {
   if (e.target.id==="sog-q") { sogQuery = e.target.value; const rows = $("#sog-rows"); render(); }
   if (e.target.id==="home-q") { sogQuery = e.target.value; }
   if (e.target.id==="td-q") { td.q = e.target.value; render(); }
+  if (e.target.id==="dept-q") { deptQ = e.target.value; render(); }
 });
 view.addEventListener("keydown", e => {
   if (e.target.id==="home-q" && e.key==="Enter") { e.preventDefault(); location.hash = "#sogs"; setTimeout(()=>{ const q=$("#sog-q"); q&&q.focus(); },0); }
@@ -1297,6 +1337,7 @@ view.addEventListener("click", e => {
   const rv = e.target.closest("[data-review]"); if (rv) { rv.disabled = true; db.collection("members").doc(rv.dataset.review).update({reviewedAt: nowIso()}).then(()=>toast("Marked reviewed"), ()=>{ rv.disabled=false; toast("Could not save."); }); return; }
   const sb = e.target.closest("[data-start-book]"); if (sb) { startBook(sb.dataset.startBook, sb.dataset.tag).then(()=>render()); return; }
   const yr = e.target.closest("[data-year]"); if (yr) { hoursYear = +yr.dataset.year; render(); return; }
+  const rmo = e.target.closest("[data-rmode]"); if (rmo) { rosterMode = rmo.dataset.rmode; render(); return; }
   const rf = e.target.closest("[data-rfilter]"); if (rf) { rosterFilter = rf.dataset.rfilter; render(); return; }
   const dh = e.target.closest("[data-del-hours]"); if (dh) { delHours(dh.dataset.delHours); return; }
   const dc = e.target.closest("[data-del-cert]"); if (dc) { delCert(dc.dataset.delCert); return; }

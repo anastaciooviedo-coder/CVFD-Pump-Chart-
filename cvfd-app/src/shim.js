@@ -108,6 +108,7 @@
       h("button", { class: "cv-btn", type: "button", text: "Sign out", onclick: async () => { await auth.signOut(); location.hash = ""; location.reload(); } }),
       role === "admin" ? h("button", { class: "cv-btn alt", type: "button", text: "Manage member roles", onclick: rolesSheet }) : null,
       role === "admin" ? h("button", { class: "cv-btn alt", type: "button", text: "Load starting data", onclick: seedSheet }) : null,
+      STAFF.includes(role) ? h("button", { class: "cv-btn alt", type: "button", text: "Import member list (Aladtec)", onclick: rosterSheet }) : null,
       h("a", { class: "cv-link", href: "privacy.html", style: "display:block", text: "Privacy policy" }),
       h("button", { class: "cv-link", type: "button", text: "Delete my account", onclick: () => {
         const ok = h("button", { class: "cv-btn bad", type: "button", text: "Yes, delete my account and training record", onclick: async () => {
@@ -179,6 +180,63 @@
     showOverlay(h("div", { class: "cv-card" }, h("h1", { text: "Load starting data" }), st, guideBtn, tdBtn, file,
       h("button", { class: "cv-btn alt", type: "button", text: "Done", onclick: () => { closeOverlay(); location.reload(); } })));
   }
+  /* ---------- department list from an Aladtec "Member List" CSV export ---------- */
+  function parseCsv(text) {
+    const rows = []; let row = [], f = "", q = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; }
+      else if (c === '"') q = true;
+      else if (c === ",") { row.push(f); f = ""; }
+      else if (c === "\n" || c === "\r") { if (c === "\r" && text[i + 1] === "\n") i++; row.push(f); rows.push(row); row = []; f = ""; }
+      else f += c;
+    }
+    if (f || row.length) { row.push(f); rows.push(row); }
+    return rows;
+  }
+  const TYPES = [["EMS Duty Crew", /ems duty crew/i], ["Fire Duty Crew", /fire duty crew/i], ["Volunteer", /volunteer|station \d+ personnel/i]];
+  const ASSIGN = [["specops", /special op/i], ["td", /training/i], ["admin", /admin/i]];
+  function rosterFromCsv(text) {
+    const rows = parseCsv(text.replace(/^﻿/, ""));
+    const hi = rows.findIndex(r => r.includes("Email") && r.includes("Last Name"));
+    if (hi < 0) throw { message: "That doesn't look like an Aladtec Member List export (no Email and Last Name columns)." };
+    const H = rows[hi], col = n => H.indexOf(n), get = (r, n) => (col(n) >= 0 ? String(r[col(n)] || "").trim() : "");
+    const out = {};
+    for (const r of rows.slice(hi + 1)) {
+      if (r.length < 3) continue;
+      let last = get(r, "Last Name"), first = get(r, "First Name");
+      if (!last && !first) continue;
+      const code = ((last.match(/\(([^)]+)\)/) || [])[1] || "").trim(); last = last.replace(/\s*\([^)]*\)\s*/g, " ").trim();
+      const et = get(r, "Employee Type"), wg = get(r, "Work Group"), both = wg + " | " + et;
+      const t = TYPES.find(([, re]) => re.test(wg)) || TYPES.find(([, re]) => re.test(et));
+      const email = get(r, "Email").toLowerCase();
+      const id = email && /^[^\s/@]+@[^\s/]+$/.test(email) ? email : "noemail-" + (last + "-" + first).toLowerCase().replace(/[^a-z0-9]+/g, "-");
+      out[id] = { name: (first + " " + last).trim(), first, last, code, email, memberType: t ? t[0] : "",
+        assign: ASSIGN.filter(([, re]) => re.test(both)).map(([k]) => k),
+        station: ((et.match(/station\s*(\d+)/i) || [])[1] || ""), hire: get(r, "Date Hired"), group: wg, empType: et, importedAt: Date.now() };
+    }
+    return out;
+  }
+  async function rosterSheet() {
+    const st = h("p", { text: "In Aladtec: Members › Member List, filter Status is Active, export as CSV. Pick that file here. It replaces the department list: people no longer on it are removed. Only staff can see the list; each member can see only their own entry, which fills in their profile when they sign up with the same email. Phone numbers are not imported." });
+    const file = h("input", { type: "file", accept: ".csv,text/csv", style: "display:none", onchange: async () => {
+      const f = file.files && file.files[0]; if (!f) return;
+      try {
+        const data = rosterFromCsv(await f.text()); const ids = Object.keys(data);
+        if (!ids.length) throw { message: "No members found in that file." };
+        st.textContent = `Found ${ids.length} members. Saving…`;
+        const old = (await fs.collection("roster").get()).docs.map(d => d.id).filter(id => !(id in data));
+        const ops = [...ids.map(id => b => b.set(fs.collection("roster").doc(id), data[id])), ...old.map(id => b => b.delete(fs.collection("roster").doc(id)))];
+        for (let i = 0; i < ops.length; i += 400) { const b = fs.batch(); ops.slice(i, i + 400).forEach(op => op(b)); await b.commit(); }
+        const by = t => ids.filter(id => data[id].memberType === t).length;
+        st.textContent = `Done. ${ids.length} members: ${by("Volunteer")} Volunteer, ${by("Fire Duty Crew")} Fire Duty Crew, ${by("EMS Duty Crew")} EMS Duty Crew${old.length ? `. Removed ${old.length} no longer on the list` : ""}. See Cadre › Member roster › Department list.`;
+      } catch (e) { st.textContent = errText(e); }
+      file.value = "";
+    } });
+    showOverlay(h("div", { class: "cv-card" }, h("h1", { text: "Import member list" }), st,
+      h("button", { class: "cv-btn", type: "button", text: "Choose the CSV file", onclick: () => file.click() }), file,
+      h("button", { class: "cv-btn alt", type: "button", text: "Done", onclick: closeOverlay })));
+  }
   const toastMsg = m => (window.guideToast ? window.guideToast(m) : null);
 
   /* ---------- claude.use() compatible namespaces ---------- */
@@ -190,7 +248,7 @@
       isOwner: async () => role === "admin",
       canEdit: async () => STAFF.includes(role),
       can: async () => null,
-      me: async () => ({ id: fbUser.uid, name: (profile && profile.name) || fbUser.displayName || fbUser.email || "" }),
+      me: async () => ({ id: fbUser.uid, name: (profile && profile.name) || fbUser.displayName || fbUser.email || "", email: fbUser.email || "" }),
       profiles: async ids => {
         const out = {};
         await Promise.all(ids.map(async id => {

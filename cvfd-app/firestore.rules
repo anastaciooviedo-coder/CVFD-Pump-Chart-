@@ -29,6 +29,13 @@ service cloud.firestore {
     match /weeks/{rest=**} { allow read, write: if staff(); }
     match /td/{rest=**}    { allow read, write: if staff(); }
 
+    // Department list imported from Aladtec (id = lowercase email). Staff manage it; a member can read
+    // only the entry with their own sign-in email, which prefills their profile.
+    match /roster/{id} {
+      allow read: if staff() || (signedIn() && request.auth.token.email != null && request.auth.token.email.lower() == id);
+      allow write: if staff();
+    }
+
     // Member training records: the member and staff.
     // Members cannot mark themselves as a verified officer or as reviewed: only staff set those.
     match /members/{uid} {
