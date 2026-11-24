@@ -316,6 +316,16 @@
   }
   firebase.initializeApp(cfg);
   auth = firebase.auth(); fs = firebase.firestore();
+  // The shared app code was written for claude.ai's db, where update() deep-merges nested maps
+  // (update({books:{[key]:...}}) adds one book). Firestore's update() would replace the whole map,
+  // so plain-object updates go through set(..., {merge:true}), which deep-merges the same way.
+  (function () {
+    const DR = firebase.firestore.DocumentReference.prototype, orig = DR.update;
+    DR.update = function (a) {
+      if (arguments.length !== 1 || !a || typeof a !== "object" || a instanceof firebase.firestore.FieldPath) return orig.apply(this, arguments);
+      return this.set(a, { merge: true });
+    };
+  })();
   if (cfg.useEmulator) { auth.useEmulator("http://127.0.0.1:9099"); fs.useEmulator("127.0.0.1", 8085); }
   try { fs.enablePersistence({ synchronizeTabs: true }).catch(() => {}); } catch (e) {}
   window.__cvfd = { get auth() { return auth; }, get fs() { return fs; } };

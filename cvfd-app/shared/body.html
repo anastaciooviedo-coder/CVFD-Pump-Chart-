@@ -52,7 +52,7 @@ const view = $("#view");
 // ---------- state ----------
 let SOGS = null, sogErr = null;
 const store = {sections:[], items:[], tools:[], ready:false, failed:false};
-let db = null, canEdit = false, editing = false;
+let db = null, canEdit = false, editing = false, isAdmin = false;
 let lastHash = null, sizeTag = null, classTag = null, catTag = null;
 let cadreCtx = null, cadreStarted = false, authKnown = false;
 window.guideToast = msg => toast(msg);
@@ -92,7 +92,7 @@ async function useSnapshot(){
   try {
     db = await claude.use("db");
     const user = await claude.use("user");
-    if (user) { try { canEdit = await user.canEdit(); } catch(e) { canEdit = false; } }
+    if (user) { try { canEdit = await user.canEdit(); } catch(e) { canEdit = false; } try { isAdmin = !!(await user.isOwner()); } catch(e) {} }
     $("#edit-toggle").hidden = !canEdit;
     { const ct = $("#cadre-tab"); if (ct) ct.hidden = !canEdit; }
     cadreCtx = {db: null, user, canEdit};
@@ -236,18 +236,26 @@ async function initMe(user){
     ref.onSnapshot(s => { me.doc = s.exists ? s.data() : null; tick(); if (APP && !s.metadata.hasPendingWrites) matchDept(); }, fail);
     ref.collection("certs").onSnapshot(s => { me.certs = s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(a.expires||"9").localeCompare(String(b.expires||"9"))); tick(); }, fail);
     ref.collection("hours").onSnapshot(s => { me.hours = s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(b.date).localeCompare(String(a.date))); tick(); }, fail);
+    if (APP) db.collection("config").doc("ce").onSnapshot(s => { cfg.ce = s.exists ? s.data() : null; softRender(); }, () => {});
     ref.collection("books").onSnapshot(s => { me.books = Object.fromEntries(s.docs.map(d=>[d.id,{id:d.id,...d.data()}])); tick(); }, fail);
   } catch(e) { me.failed = true; softRender(); }
 }
 const RANKS = ["Cadet","Probationary Firefighter","Firefighter","Engine Operator","Lieutenant","Captain","Battalion Chief","Deputy / Assistant Chief","Fire Chief"];
 const EMS_LEVELS = ["Basic","Advanced","Paramedic"];
-const SFFMA = [["ff1","Firefighter I"],["ff2","Firefighter II"],["hzA","HazMat Awareness"],["hzO","HazMat Operations"]];
+const SFFMA = [["tcfp","TCFP certified"],["ff1","SFFMA Firefighter I"],["ff2","SFFMA Firefighter II"],["hzA","SFFMA HazMat Awareness"],["hzO","SFFMA HazMat Operations"]];
 function sffmaHeld(m){ const c = (m && m.sffma) || {}; return SFFMA.filter(([k])=>c[k] && c[k].held); }
-function sffmaCe(hours, year){ return Math.round(hours.filter(h=>h.sffma && String(h.date||"").startsWith(String(year))).reduce((s,h)=>s+(+h.hours||0),0)*100)/100; }
+// CE runs on the renewal year: Nov 1 through Oct 31. ceYear(2026) = Nov 1 2025 to Oct 31 2026.
+function ceYearOf(d){ const s = String(d||""); const y = +s.slice(0,4); return s.slice(5,7) >= "11" ? y+1 : y; }
+function ceNow(){ return ceYearOf(today()); }
+function ceLabel(y){ return "Nov 1, "+(y-1)+" to Oct 31, "+y; }
+function sffmaCe(hours, year){ return Math.round(hours.filter(h=>h.sffma && ceYearOf(h.date)===year).reduce((s,h)=>s+(+h.hours||0),0)*100)/100; }
+function certVerified(m, k){ return !!(m && m.certCheck && m.certCheck[k]); }
+const cfg = {ce: null};
+function ceTarget(){ return cfg.ce && +cfg.ce.target || 0; }
 const MEMBER_TYPES = ["Volunteer","Fire Duty Crew","EMS Duty Crew"];
 const ASSIGNMENTS = [["specops","Special Operations"],["td","Training Division"],["admin","Administrative"]];
 function typeOf(m){ return m.memberType==="Duty Crew" ? "Fire Duty Crew" : (m.memberType||""); }
-function memberTags(m){ return [m.officer&&m.officer.link?"Verified officer":"", typeOf(m), m.ems&&"EMS "+m.ems, sffmaHeld(m).length&&"SFFMA "+sffmaHeld(m).map(([,l])=>l.replace("Firefighter ","FF ").replace("HazMat ","HM ")).join("/"), ...(m.assign||[]).map(k=>(ASSIGNMENTS.find(a=>a[0]===k)||[,k])[1])].filter(Boolean); }
+function memberTags(m){ return [m.officer&&m.officer.link?"Verified officer":"", typeOf(m), m.ems&&"EMS "+m.ems, sffmaHeld(m).length&&sffmaHeld(m).map(([,l])=>l.replace("SFFMA ","").replace(" certified","").replace("Firefighter ","FF ").replace("HazMat ","HM ")).join("/"), ...(m.assign||[]).map(k=>(ASSIGNMENTS.find(a=>a[0]===k)||[,k])[1])].filter(Boolean); }
 async function officerCopy(){
   const d = await db.collection("td").doc("main").collection("docs").doc("officer-review").get();
   const r = d.exists ? d.data() : null; const link = r && (String(r.body||"").match(/https:\/\/[^\s)]+/)||[])[0];
@@ -279,6 +287,12 @@ async function matchDept(){
   } catch(e) {}
 }
 let dept = null, rosterMode = "signed", deptQ = "";
+const memberRole = {}; let rolesStarted = false;
+function startRoles(){
+  if (rolesStarted || !APP || !db || !canEdit) return; rolesStarted = true;
+  db.collection("users").onSnapshot(s => { s.docs.forEach(d=>{ memberRole[d.id] = d.data().role || "member"; }); softRender(); }, () => {});
+  db.collection("config").doc("ce").onSnapshot(s => { cfg.ce = s.exists ? s.data() : null; softRender(); }, () => {});
+}
 function startDept(){
   if (dept || !APP || !db || !canEdit) return;
   dept = {list:[], ready:false, failed:false};
@@ -350,17 +364,17 @@ function vMe(){
         <label class="field"><span>Category</span><select id="hf-cat">${ISO_CATS.map(([k,l])=>`<option value="${k}">${l}</option>`).join("")}</select></label>
         <label class="field"><span>Hours</span><input type="number" id="hf-hours" min="0.25" max="24" step="0.25" required inputmode="decimal"></label>
         <label class="field"><span>What was it?</span><input type="text" id="hf-note" placeholder="e.g. Hose drill, Station 2"></label>
-        <label class="chk" style="grid-column:1/-1"><input type="checkbox" id="hf-sffma" ${sffmaHeld(p).length?"checked":""}><span>Counts toward SFFMA CE</span></label>
+        <label class="chk" style="grid-column:1/-1"><input type="checkbox" id="hf-sffma" ${sffmaHeld(p).length?"checked":""}><span>Counts toward CE (TCFP / SFFMA)</span></label>
         <div class="actions" style="grid-column:1/-1"><button class="btn primary" type="submit">Add hours</button></div>
       </form>
-      ${yHours.length?`<h4>${yHours.length} entr${yHours.length===1?"y":"ies"} in ${hoursYear}</h4>${yHours.map(h=>`<div class="rowx"><div><b>${esc(h.hours)} hrs · ${esc((ISO_CATS.find(c=>c[0]===h.cat)||[,h.cat])[1])}</b><small>${fmtDate(h.date)}${h.note?" · "+esc(h.note):""}${h.sffma?" · SFFMA CE":""}</small></div><button class="xbtn" type="button" data-del-hours="${esc(h.id)}" aria-label="Delete entry">×</button></div>`).join("")}`:`<p class="sub">No hours logged for ${hoursYear} yet.</p>`}
+      ${yHours.length?`<h4>${yHours.length} entr${yHours.length===1?"y":"ies"} in ${hoursYear}</h4>${yHours.map(h=>`<div class="rowx"><div><b>${esc(h.hours)} hrs · ${esc((ISO_CATS.find(c=>c[0]===h.cat)||[,h.cat])[1])}</b><small>${fmtDate(h.date)}${h.note?" · "+esc(h.note):""}${h.sffma?" · CE":""}</small></div><button class="xbtn" type="button" data-del-hours="${esc(h.id)}" aria-label="Delete entry">×</button></div>`).join("")}`:`<p class="sub">No hours logged for ${hoursYear} yet.</p>`}
     </div></div>
 
-    <div class="card"><div class="card-h"><h3>SFFMA certifications & CE</h3></div><div class="card-b">
+    <div class="card"><div class="card-h"><h3>TCFP / SFFMA certifications & CE</h3></div><div class="card-b">
       <form id="sf" data-keep>
-      ${SFFMA.map(([k,l])=>{ const c = (p.sffma||{})[k]||{}; return `<div class="sffma-row"><label class="chk"><input type="checkbox" id="sf-${k}" ${c.held?"checked":""}><span>${l}</span></label><label class="field"><span>Date certified</span><input type="date" id="sf-${k}-date" value="${esc(c.date||"")}"></label><label class="field"><span>Cert #</span><input type="text" id="sf-${k}-num" value="${esc(c.number||"")}"></label></div>`; }).join("")}
-      <div class="actions"><button class="btn primary" type="submit">Save SFFMA certifications</button></div></form>
-      ${sffmaHeld(p).length?`<div class="prog"><div class="ph"><b>SFFMA CE hours ${hoursYear}</b><span>${sffmaCe(me.hours, hoursYear)} hrs</span></div></div><p class="sub">Count training toward SFFMA CE by ticking "Counts toward SFFMA CE" when you log hours above. Last year: ${sffmaCe(me.hours, hoursYear-1)} hrs.</p>`:`<p class="sub">Check the SFFMA certifications you hold. Then log CE with your training hours.</p>`}
+      ${SFFMA.map(([k,l])=>{ const c = (p.sffma||{})[k]||{}; return `<div class="sffma-row"><label class="chk"><input type="checkbox" id="sf-${k}" ${c.held?"checked":""}><span>${l}${c.held?(certVerified(p,k)?` <span class="pill ok">Verified</span>`:` <span class="pill">Not verified yet</span>`):""}</span></label><label class="field"><span>Date certified</span><input type="date" id="sf-${k}-date" value="${esc(c.date||"")}"></label><label class="field"><span>Cert #</span><input type="text" id="sf-${k}-num" value="${esc(c.number||"")}"></label></div>`; }).join("")}
+      <div class="actions"><button class="btn primary" type="submit">Save certifications</button></div></form>
+      ${sffmaHeld(p).length?(()=>{ const y = ceNow(), h = sffmaCe(me.hours, y), t = ceTarget(); return `<div class="prog"><div class="ph"><b>CE hours, renewal year ending Oct 31, ${y}</b><span>${h}${t?" / "+t:""} hrs</span></div>${t?bar(pct(h,t), h>=t?"var(--ok,#1d6b3a)":"var(--s2)"):""}</div><p class="sub">${ceLabel(y)}. Tick "Counts toward CE" when you log hours above. Previous renewal year: ${sffmaCe(me.hours, y-1)} hrs.</p>`; })():`<p class="sub">Check the TCFP and SFFMA certifications you hold. The Training Division verifies them. Then log CE with your training hours.</p>`}
     </div></div>
 
     <div class="card"><div class="card-h"><h3>Certifications</h3></div><div class="card-b">
@@ -447,7 +461,7 @@ function ago(iso){ if (!iso) return ""; const s = (Date.now()-new Date(iso).getT
 function needsReview(m){ return !!(m.updatedAt && (!m.reviewedAt || m.updatedAt > m.reviewedAt)); }
 async function saveIsoSummary(){
   const T = isoTotals(me.hours, hoursYear, me.doc && me.doc.designation);
-  try { await meRef().update({iso:{[hoursYear]:{by:T.by, applied:T.applied, req:T.req, pct:T.pct}}, sffmaCe:{[hoursYear]: sffmaCe(me.hours, hoursYear)}}); } catch(e) {}
+  try { await meRef().update({iso:{[hoursYear]:{by:T.by, applied:T.applied, req:T.req, pct:T.pct}}, sffmaCe:{[ceNow()]: sffmaCe(me.hours, ceNow()), [ceNow()-1]: sffmaCe(me.hours, ceNow()-1)}}); } catch(e) {}
 }
 
 // ---------- staff roster ----------
@@ -497,6 +511,7 @@ function vMember(uid){
   if (!canEdit) return vCadreGate();
   startRoster();
   if (!memberView || memberView.uid !== uid) { loadMember(uid); }
+  startRoles();
   const m = roster && roster.list.find(x=>x.id===uid);
   const head = `<a class="sub" href="#roster">‹ Member roster</a>`;
   if (!m || !memberView.ready) return `<section class="view">${head}<p class="sub">${memberView&&memberView.failed?"This record could not load.":"Loading…"}</p></section>`;
@@ -504,8 +519,17 @@ function vMember(uid){
   return `<section class="view" style="--c:var(--s4)">${head}
     <div class="doc-h"><span class="num">${esc([m.rank, m.station].filter(Boolean).join(" · ")||"Member")}</span><h1>${esc(memberName(m))}</h1><span class="meta">${esc([...memberTags(m), (m.designation||"Firefighter")+" (ISO)"].join(" · "))}${m.empId?" · ID "+esc(m.empId):""}</span></div>
     <div class="card"><div class="card-b"><div class="rowx"><div><b>${needsReview(m)?`<span class="pill bad">New changes</span> `:`<span class="pill ok">Reviewed</span> `}${esc(m.lastChange||"No changes logged yet")}</b><small>${m.updatedAt?"Last update "+esc(ago(m.updatedAt)):""}${m.reviewedAt?" · Reviewed "+esc(ago(m.reviewedAt)):""}</small></div>${needsReview(m)?`<button class="btn sm primary" type="button" data-review="${esc(m.id)}">Mark reviewed</button>`:""}</div></div></div>
-    <div class="card"><div class="card-b"><div class="rowx"><div><b>${m.officer&&m.officer.link?`<span class="pill ok">Verified officer</span>`:"Officer Review access"}</b><small>${m.officer&&m.officer.link?"Sees the Officer Review tile. Verified "+esc(ago(m.officer.at)):"Verify only real station officers. It gives them the officer review link."}</small></div><button class="btn sm ${m.officer&&m.officer.link?"":"primary"}" type="button" data-officer="${esc(m.id)}" data-on="${m.officer&&m.officer.link?"0":"1"}">${m.officer&&m.officer.link?"Remove":"Verify officer"}</button></div></div></div>
-    ${sffmaHeld(m).length?`<div class="card"><div class="card-h"><h3>SFFMA</h3></div><div class="card-b">${sffmaHeld(m).map(([k,l])=>{ const c = m.sffma[k]; return `<div class="tbl"><span><b>${l}</b></span><span>${c.date?"Certified "+fmtDate(c.date):"No date"}${c.number?" · #"+esc(c.number):""}</span></div>`; }).join("")}<div class="tbl"><span><b>SFFMA CE ${y}</b></span><span>${sffmaCe(memberView.hours, y)} hrs (last year ${sffmaCe(memberView.hours, y-1)})</span></div></div></div>`:""}
+    ${APP?"":`<div class="card"><div class="card-b"><div class="rowx"><div><b>${m.officer&&m.officer.link?`<span class="pill ok">Verified officer</span>`:"Officer Review access"}</b><small>${m.officer&&m.officer.link?"Sees the Officer Review tile. Verified "+esc(ago(m.officer.at)):"Verify only real station officers. It gives them the officer review link."}</small></div><button class="btn sm ${m.officer&&m.officer.link?"":"primary"}" type="button" data-officer="${esc(m.id)}" data-on="${m.officer&&m.officer.link?"0":"1"}">${m.officer&&m.officer.link?"Remove":"Verify officer"}</button></div></div></div>`}
+    <div class="card"><div class="card-h"><h3>Certifications (TCFP / SFFMA)</h3></div><div class="card-b">
+      <p class="sub">Turn a certification on when you've confirmed it. Turning it off removes it from their record.</p>
+      ${SFFMA.map(([k,l])=>{ const c = (m.sffma||{})[k]||{}; const on = c.held && certVerified(m,k);
+        return `<div class="rowx"><div><b>${l} ${c.held?(on?`<span class="pill ok">Verified</span>`:`<span class="pill warn">Member says yes</span>`):""}</b><small>${c.held?(c.date?"Certified "+fmtDate(c.date):"No date")+(c.number?" · #"+esc(c.number):""):"Not on record"}</small></div><button class="btn sm" type="button" data-certv="${esc(m.id)}" data-k="${k}" data-on="${on?0:1}">${on?"Turn off":"Turn on"}</button></div>`; }).join("")}
+      <div class="tbl"><span><b>CE, year ending Oct 31, ${ceNow()}</b></span><span>${sffmaCe(memberView.hours, ceNow())}${ceTarget()?" / "+ceTarget():""} hrs (previous year ${sffmaCe(memberView.hours, ceNow()-1)})</span></div>
+    </div></div>
+    ${APP?`<div class="card"><div class="card-h"><h3>Access to restricted content</h3></div><div class="card-b">
+      <div class="rowx"><div><b>Officer ${m.officer&&m.officer.link?`<span class="pill ok">On</span>`:""}</b><small>Officer Review tile on the Field Guide home</small></div><button class="btn sm" type="button" data-officer="${esc(m.id)}" data-on="${m.officer&&m.officer.link?0:1}">${m.officer&&m.officer.link?"Turn off":"Turn on"}</button></div>
+      <div class="rowx"><div><b>Training Division cadre ${memberRole[m.id]==="cadre"||memberRole[m.id]==="admin"?`<span class="pill ok">On</span>`:""}</b><small>${memberRole[m.id]==="admin"?"Admin: full access":"Cadre tab, TD dashboard, Cadre Material, member roster, edit content"}</small></div>${isAdmin&&memberRole[m.id]!=="admin"?`<button class="btn sm" type="button" data-cadre="${esc(m.id)}" data-on="${memberRole[m.id]==="cadre"?0:1}">${memberRole[m.id]==="cadre"?"Turn off":"Turn on"}</button>`:`<small>${isAdmin?"":"Admin only"}</small>`}</div>
+    </div></div>`:""}
     <div class="card"><div class="card-h"><h3>ISO hours ${y}</h3></div><div class="card-b">
       <div class="prog"><div class="ph"><b>${T.applied} of ${T.req} hrs</b><span>${T.pct}%</span></div>${bar(T.pct)}</div>
       ${ISO_CATS.filter(([k])=>T.need.includes(k)||T.by[k]).map(([k,l,t])=>`<div class="tbl"><span>${l}</span><span>${T.by[k]}${t&&T.need.includes(k)?" / "+t:""} hrs</span></div>`).join("")}
@@ -550,16 +574,27 @@ function cadreNav(cur){
 }
 function daysFromToday(s){ return s ? Math.round((new Date(s+"T00:00") - new Date(today()+"T00:00"))/86400000) : null; }
 function isDone(v){ return /^(completed?|cleared|closed)/i.test(String(v||"").trim()); }
+// Each dashboard number is a named filter on a sheet; tapping it opens the sheet showing just those rows.
+function due45(d, st){ return r => { const n = daysFromToday(r[d]); return n !== null && n >= 0 && n <= 45 && !isDone(r[st]); }; }
+const TD_F = {
+  "act-ns": ["actions","Not Started", r=>r.status==="Not Started"], "act-ip": ["actions","In Progress", r=>r.status==="In Progress"],
+  "act-pe": ["actions","Pending", r=>r.status==="Pending"], "act-co": ["actions","Complete", r=>r.status==="Complete"],
+  "act-open": ["actions","Open action items", r=>r.status && r.status!=="Complete"], "act-high": ["actions","High priority open", r=>r.priority==="High" && r.status!=="Complete"],
+  "act-over": ["actions","Overdue", r=>r.status!=="Complete" && r.due && daysFromToday(r.due) < 0],
+  "crs-act": ["courses","Active TCFP courses", r=>["In Progress","Pending"].includes(r.status)], "crs-att": ["courses","Needing attention", r=>r.status==="Needs Attention"], "crs-close": ["courses","Awaiting closeout", r=>r.closeout==="Pending"],
+  "bk-open": ["books","Open skills books", r=>r.status && r.status!=="Complete"], "bk-att": ["books","Books needing attention", r=>r.status==="Needs Attention"],
+  "cad-all": ["cadets","All cadets", r=>true], "cad-att": ["cadets","Cadets needing attention", r=>r.status==="Needs Attention"], "cad-ff1": ["cadets","FF I certified", r=>r.ff1==="Yes"], "cad-ff2": ["cadets","FF II certified", r=>r.ff2==="Yes"],
+  "pr-all": ["probation","All probationary", r=>true], "pr-p1": ["probation","Phase 1 due in 45 days", due45("p1due","p1")], "pr-p2": ["probation","Phase 2 due in 45 days", due45("p2due","p2")], "pr-p3": ["probation","Phase 3 due in 45 days", due45("p3due","p3")],
+  "tb-all": ["taskbook","All taskbook members", r=>true], "tb-eo": ["taskbook","Engine Operator open", r=>/^open/i.test(r.eoStatus||"")], "tb-fdn": ["taskbook","Foundations open", r=>/^yes/i.test(r.fdnOpen||"")],
+};
 function tdMetrics(){
-  const R = k => td.rows[k] || [];
-  const cnt = (k, f) => R(k).filter(f).length;
-  const due45 = (d, st) => r => { const n = daysFromToday(r[d]); return n !== null && n >= 0 && n <= 45 && !isDone(r[st]); };
+  const M = (label, id) => { const [k,,f] = TD_F[id]; return [label, (td.rows[k]||[]).filter(f).length, "#td-"+k+"~"+id]; };
   return {
-    actionStatus: ["Not Started","In Progress","Pending","Complete"].map(s=>[s, cnt("actions", r=>r.status===s)]),
-    tcfp: [["Active TCFP courses", cnt("courses", r=>["In Progress","Pending"].includes(r.status))],["Courses needing attention", cnt("courses", r=>r.status==="Needs Attention")],["Courses awaiting closeout", cnt("courses", r=>r.closeout==="Pending")]],
-    td: [["Open action items", cnt("actions", r=>r.status && r.status!=="Complete")],["High priority open", cnt("actions", r=>r.priority==="High" && r.status!=="Complete")],["Completed actions", cnt("actions", r=>r.status==="Complete")],["Open skills books", cnt("books", r=>r.status && r.status!=="Complete")]],
-    academy: [["Academy cadets", R("cadets").length],["Cadets needing attention", cnt("cadets", r=>r.status==="Needs Attention")],["FF I certified", cnt("cadets", r=>r.ff1==="Yes")],["FF II certified", cnt("cadets", r=>r.ff2==="Yes")]],
-    probie: [["Probationary members", R("probation").length],["Phase 1 due next 45 days", cnt("probation", due45("p1due","p1"))],["Phase 2 due next 45 days", cnt("probation", due45("p2due","p2"))],["Phase 3 due next 45 days", cnt("probation", due45("p3due","p3"))],["Taskbook members loaded", R("taskbook").length],["Engine Operator open", cnt("taskbook", r=>/^open/i.test(r.eoStatus||""))],["Foundations open", cnt("taskbook", r=>/^yes/i.test(r.fdnOpen||""))],["Books needing attention", cnt("books", r=>r.status==="Needs Attention")]],
+    actionStatus: [M("Not Started","act-ns"), M("In Progress","act-ip"), M("Pending","act-pe"), M("Complete","act-co")],
+    tcfp: [M("Active TCFP courses","crs-act"), M("Courses needing attention","crs-att"), M("Courses awaiting closeout","crs-close")],
+    td: [M("Open action items","act-open"), M("High priority open","act-high"), M("Overdue actions","act-over"), M("Completed actions","act-co"), M("Open skills books","bk-open")],
+    academy: [M("Academy cadets","cad-all"), M("Cadets needing attention","cad-att"), M("FF I certified","cad-ff1"), M("FF II certified","cad-ff2")],
+    probie: [M("Probationary members","pr-all"), M("Phase 1 due next 45 days","pr-p1"), M("Phase 2 due next 45 days","pr-p2"), M("Phase 3 due next 45 days","pr-p3"), M("Taskbook members loaded","tb-all"), M("Engine Operator open","tb-eo"), M("Foundations open","tb-fdn"), M("Books needing attention","bk-att")],
   };
 }
 function vTdMembers(){
@@ -567,22 +602,22 @@ function vTdMembers(){
   const head = `<div class="card-h"><h3>From member records</h3></div>`;
   if (!roster || !roster.ready) return `<div class="card">${head}<div class="card-b"><p class="sub">${roster&&roster.failed?"Member records could not load.":"Loading member records…"}</p></div></div>`;
   const L = roster.list, has = f => L.filter(f).length;
-  const grid = [["Members signed up", L.length],...MEMBER_TYPES.map(t=>[t, has(m=>typeOf(m)===t)]),...EMS_LEVELS.map(l=>["EMS "+l, has(m=>m.ems===l)]),...ASSIGNMENTS.map(([k,l])=>[l, has(m=>(m.assign||[]).includes(k))]),["SFFMA certified", has(m=>sffmaHeld(m).length)],...SFFMA.map(([k,l])=>["SFFMA "+l, has(m=>sffmaHeld(m).some(x=>x[0]===k))]),["Verified officers", has(m=>m.officer&&m.officer.link)],["Waiting for your review", has(needsReview)],["No rank entered", has(m=>!m.rank)]];
+  const grid = [["Members signed up", L.length, "#roster~all"],...MEMBER_TYPES.map(t=>[t, has(m=>typeOf(m)===t), "#roster~"+encodeURIComponent(t)]),...EMS_LEVELS.map(l=>["EMS "+l, has(m=>m.ems===l)]),...ASSIGNMENTS.map(([k,l])=>[l, has(m=>(m.assign||[]).includes(k)), "#roster~"+k]),...SFFMA.map(([k,l])=>[l, has(m=>sffmaHeld(m).some(x=>x[0]===k))]),["Verified officers", has(m=>m.officer&&m.officer.link)],["Waiting for your review", has(needsReview)],["No rank entered", has(m=>!m.rank)]];
   const ranks = RANKS.map(r=>[r, has(m=>m.rank===r)]).filter(x=>x[1]);
   const norm = x => String(x||"").toLowerCase().split(/[^a-z]+/).filter(Boolean).sort().join(" ");
   const tracked = new Set((td.rows.probation||[]).flatMap(r=>[r.memberId, norm(r.name)]).filter(Boolean));
   const probies = L.filter(m=>m.rank==="Probationary Firefighter").sort((a,b)=>memberName(a).localeCompare(memberName(b)));
   return `<div class="card">${head}<div class="card-b">${metricGrid(grid)}
     ${ranks.length?`<h4>By rank</h4>${ranks.map(([r,n])=>`<div class="tbl"><span><b>${esc(r)}</b></span><span>${n}</span></div>`).join("")}`:""}
-    ${(()=>{ const y = new Date().getFullYear(), sf = L.filter(m=>sffmaHeld(m).length).sort((a,b)=>((a.sffmaCe||{})[y]||0)-((b.sffmaCe||{})[y]||0));
-      return sf.length?`<h4>SFFMA CE hours ${y} (lowest first)</h4>${sf.map(m=>`<div class="tbl"><span><a href="#member-${esc(m.id)}" style="color:inherit"><b>${esc(memberName(m))}</b></a></span><span>${(m.sffmaCe||{})[y]||0} hrs · ${sffmaHeld(m).map(([,l])=>esc(l)).join(", ")}</span></div>`).join("")}`:""; })()}
+    ${(()=>{ startRoles(); const y = ceNow(), t = ceTarget(), sf = L.filter(m=>sffmaHeld(m).length).sort((a,b)=>((a.sffmaCe||{})[y]||0)-((b.sffmaCe||{})[y]||0));
+      return `<h4>CE hours, year ending Oct 31, ${y}${t?` · target ${t} hrs`:""}</h4>${APP?`<div class="actions" style="justify-content:flex-start;align-items:center" data-keep><label class="field" style="max-width:190px;margin:0"><span>CE hours required per year</span><input type="number" id="ce-target" min="0" step="1" value="${t||""}" inputmode="numeric"></label><button class="btn sm" type="button" data-ce-target>Save target</button></div>`:""}${sf.length?sf.map(m=>{ const h = (m.sffmaCe||{})[y]||0; return `<div class="tbl"><span><a href="#member-${esc(m.id)}" style="color:inherit"><b>${esc(memberName(m))}</b></a> ${t&&h<t?`<span class="pill warn">Behind</span>`:""}</span><span>${h}${t?" / "+t:""} hrs · ${sffmaHeld(m).map(([k,l])=>esc(l.replace("SFFMA ",""))+(certVerified(m,k)?"":"?")).join(", ")}</span></div>`; }).join(""):`<p class="sub">No members have entered TCFP or SFFMA certifications yet.</p>`}`; })()}
     <h4>Probationary members</h4>
     ${probies.length?probies.map(m=>{ const bks = Object.values(m.books||{}); const inT = tracked.has(m.id) || tracked.has(norm(memberName(m)));
       return `<div class="rowx"><div><a href="#member-${esc(m.id)}" style="color:inherit"><b>${esc(memberName(m))}</b></a><small>${bks.length?bks.map(b=>`${esc(b.title)}: ${b.done||0} of ${b.total||"?"}`).join(" · "):"No phase book started"}${m.station?" · Stn "+esc(m.station):""}</small></div>${inT?`<span class="pill ok">In tracker</span>`:`<button class="btn sm" type="button" data-td-probie="${esc(m.id)}">Add to tracker</button>`}</div>`; }).join(""):`<p class="sub">No members have entered the rank Probationary Firefighter yet.</p>`}
     <p class="sub">Counts come from the profiles members fill in. Open the <a href="#roster">Member roster</a> to review and verify them.</p>
   </div></div>`;
 }
-function metricGrid(list){ return `<div class="mgrid">${list.map(([l,v])=>`<div class="metric"><b>${v}</b><span>${esc(l)}</span></div>`).join("")}</div>`; }
+function metricGrid(list){ return `<div class="mgrid">${list.map(([l,v,href])=>href?`<a class="metric tap" href="${esc(href)}"><b>${v}</b><span>${esc(l)}</span></a>`:`<div class="metric"><b>${v}</b><span>${esc(l)}</span></div>`).join("")}</div>`; }
 function vTd(){
   if (!canEdit) return vCadreGate();
   startTd();
@@ -594,14 +629,15 @@ function vTd(){
   const overdue = (td.rows.actions||[]).filter(r=>r.status!=="Complete" && r.due && daysFromToday(r.due) < 0);
   const soon = (td.rows.probation||[]).flatMap(r=>[1,2,3].map(n=>({r,n,d:daysFromToday(r["p"+n+"due"]),st:r["p"+n]}))).filter(x=>x.d!==null && x.d>=0 && x.d<=45 && !isDone(x.st)).sort((a,b)=>a.d-b.d);
   return `<section class="view">${head}
+    ${APP?`<div class="actions" style="justify-content:flex-start"><a class="btn primary" href="#cadre">Open this week's Cadre Check-In</a><a class="btn" href="#td-actions">Action items</a><a class="btn" href="#td-probation">Probation</a></div>`:""}
     <div class="card"><div class="card-h"><h3>Action status</h3></div><div class="card-b">${metricGrid(M.actionStatus)}</div></div>
     <div class="card"><div class="card-h"><h3>TCFP courses</h3></div><div class="card-b">${metricGrid(M.tcfp)}</div></div>
     <div class="card"><div class="card-h"><h3>Training Division</h3></div><div class="card-b">${metricGrid(M.td)}
-      ${overdue.length?`<h4>Overdue actions</h4>${overdue.map(r=>`<a class="rowx" href="#" data-td-edit="actions" data-id="${esc(r.id)}" style="text-decoration:none;color:inherit"><div><b>${esc(r.item)}</b><small><span class="pill bad">Due ${fmtDate(r.due)}</span> ${esc(r.owner||"")} · ${esc(r.priority||"")}</small></div><span class="chev">›</span></a>`).join("")}`:""}
+      ${overdue.length?`<h4>Overdue actions</h4>${overdue.map(r=>`<div class="rowx"><a href="#" data-td-edit="actions" data-id="${esc(r.id)}" style="text-decoration:none;color:inherit"><div><b>${esc(r.item)}</b><small><span class="pill bad">Due ${fmtDate(r.due)}</span> ${esc(r.owner||"")} · ${esc(r.priority||"")}</small></div></a><button class="btn sm" type="button" data-td-set="actions" data-id="${esc(r.id)}" data-f="status" data-v="Complete">Mark complete</button></div>`).join("")}`:""}
       <p class="sub">Last dashboard review: ${td.main&&td.main.lastReview?fmtDate(td.main.lastReview):"not recorded"} <button class="btn sm" type="button" data-td-review>Mark reviewed today</button></p></div></div>
     <div class="card"><div class="card-h"><h3>SFFMA academy</h3></div><div class="card-b">${metricGrid(M.academy)}</div></div>
     <div class="card"><div class="card-h"><h3>Probationary / taskbooks</h3></div><div class="card-b">${metricGrid(M.probie)}
-      ${soon.length?`<h4>Phases due in the next 45 days</h4>${soon.map(x=>`<a class="rowx" href="#" data-td-edit="probation" data-id="${esc(x.r.id)}" style="text-decoration:none;color:inherit"><div><b>${esc(x.r.name)}</b><small>Phase ${x.n} due ${fmtDate(x.r["p"+x.n+"due"])} · ${x.d} days</small></div><span class="chev">›</span></a>`).join("")}`:""}
+      ${soon.length?`<h4>Phases due in the next 45 days</h4>${soon.map(x=>`<div class="rowx"><a href="#" data-td-edit="probation" data-id="${esc(x.r.id)}" style="text-decoration:none;color:inherit"><div><b>${esc(x.r.name)}</b><small>Phase ${x.n} due ${fmtDate(x.r["p"+x.n+"due"])} · ${x.d} days</small></div></a><button class="btn sm" type="button" data-td-set="probation" data-id="${esc(x.r.id)}" data-f="p${x.n}" data-v="Completed">Phase ${x.n} done</button></div>`).join("")}`:""}
     </div></div>
     ${vTdMembers()}
     <div class="card"><div class="card-h"><h3>Quick review</h3></div><div class="card-b">
@@ -619,13 +655,15 @@ function vTd(){
 function vTdTable(k){
   if (!canEdit) return vCadreGate();
   startTd();
+  let fid = ""; [k, fid] = k.split("~"); const flt = TD_F[fid] && TD_F[fid][0]===k ? TD_F[fid] : null;
   const t = TD_TABLES[k]; if (!t) return `<div class="empty">No such sheet.</div>`;
   const rows = td.rows[k];
   const head = k==="docs" ? `${cadreNav("td-docs")}<div class="gh"><h2>Cadre Only Material</h2><span class="sub">Training Division staff only</span></div>` : `${cadreNav("td")}<a class="sub" href="#td">‹ TD Dashboard</a><div class="gh"><h2>${esc(t.title)}</h2>${rows?`<span class="sub">${rows.length}</span>`:""}</div>`;
   if (!rows) return `<section class="view">${head}<p class="sub">Loading…</p></section>`;
   const q = td.q.trim().toLowerCase();
-  const list = q ? rows.filter(r=>t.cols.some(([c])=>String(r[c]||"").toLowerCase().includes(q))) : rows;
+  const list = (q ? rows.filter(r=>t.cols.some(([c])=>String(r[c]||"").toLowerCase().includes(q))) : rows).filter(flt ? flt[2] : ()=>true);
   return `<section class="view">${head}
+    ${flt?`<p><a class="chip" href="#td-${k}" aria-pressed="true">Showing: ${esc(flt[1])} (${list.length}) ✕</a></p>`:""}
     <div class="search"><input type="search" id="td-q" placeholder="Search ${esc(t.title.toLowerCase())}" aria-label="Search" value="${esc(td.q)}"></div>
     <button class="btn primary" type="button" data-td-new="${k}">${k==="docs"?"+ Add document":"+ Add row"}</button>
     ${list.length?`<div class="list">${list.map(r=>{ const sub = t.sub(r).filter(Boolean).map(x=>esc(String(x))).join(" · "); const st = r.status||""; const cls = st==="Needs Attention"?"bad":st==="Complete"?"ok":st==="High"?"warn":""; return `<a class="row-btn" href="${k==="docs"?"#tddoc-"+esc(r.id):"#"}" ${k==="docs"?"":`data-td-edit="${k}"`} data-id="${esc(r.id)}" style="--c:var(--s3)"><span class="n">${k==="actions"&&r.priority==="High"&&r.status!=="Complete"?"!":"›"}</span><span class="m"><b>${esc(r[TD_PRIMARY[k]]||"(untitled)")}</b><small>${sub}</small></span><span class="chev">›</span></a>`; }).join("")}</div>`:`<div class="empty">${q?"Nothing matches.":"No rows yet."}</div>`}
@@ -679,14 +717,14 @@ function vHomeTdGroups(){
     <div class="group"><h2>My Training</h2>
       <div class="tiles">
         <a class="tile" href="#me" style="--c:var(--s2)"><b>My Training Record</b><span>Certifications, ISO hours, phase book progress</span></a>
-        ${me.doc&&me.doc.officer&&me.doc.officer.link?`<a class="tile" href="#officer" style="--c:var(--s5)"><b>Officer Review</b><span>Sign off and approve member task books</span></a>`:""}
+        ${!APP&&me.doc&&me.doc.officer&&me.doc.officer.link?`<a class="tile" href="#officer" style="--c:var(--s5)"><b>Officer Review</b><span>Sign off and approve member task books</span></a>`:""}
         ${APP?"":`<a class="tile" href="${GUIDE_APP}" target="_blank" rel="noopener" style="--c:var(--s3)"><b>CVFD Field Guide ↗</b><span>SOGs, pump chart, size-up, department tools</span></a>`}
       </div>
     </div>
     ${canEdit?`<div class="group"><h2>Cadre (staff only)</h2><div class="tiles">
         ${APP?`<a class="tile" href="#cadre" style="--c:var(--s5)"><b>Weekly Check-In</b><span>This week's events, testing, tasks</span></a>`:`<a class="tile" href="${CK_APP}" target="_blank" rel="noopener" style="--c:var(--s5)"><b>Weekly Check-In ↗</b><span>Its own app now: events, testing, tasks</span></a>`}
         <a class="tile" href="#td" style="--c:var(--s5)"><b>TD Master Dashboard</b><span>Courses, actions, probation, taskbooks</span></a>
-        <a class="tile" href="#tddoc-officer-review" style="--c:var(--s5)"><b>Officer Review</b><span>Sign off and approve member task books</span></a>
+        ${APP?"":`<a class="tile" href="#tddoc-officer-review" style="--c:var(--s5)"><b>Officer Review</b><span>Sign off and approve member task books</span></a>`}
         <a class="tile" href="#td-docs" style="--c:var(--s5)"><b>Cadre Material</b><span>Staff-only documents</span></a>
         <a class="tile" href="#roster" style="--c:var(--s5)"><b>Member Roster${(startRoster(), roster&&roster.ready&&roster.list.filter(needsReview).length)?` <span class="pill bad">${roster.list.filter(needsReview).length} new</span>`:""}</b><span>Live member records: profiles, certs, hours, books</span></a>
       </div></div>`:""}
@@ -717,6 +755,7 @@ function vHome(){
         <a class="tile" href="#extrication" style="--c:var(--s2)"><b>Vehicle Extrication</b><span>6 crash scenes, 4 views each, decision cards</span></a>
         <a class="tile" href="#grips" style="--c:var(--s3)"><b>Hoseline Grips</b><span>Hip grip, clamp, crooked lean, Comella lock, backup</span></a>
         <a class="tile" href="#drills" style="--c:var(--s4)"><b>5-Minute Drills</b><span>100 quick station-level drills, by topic</span></a>
+        ${APP && (canEdit || (me.doc&&me.doc.officer&&me.doc.officer.link)) ? `<a class="tile" href="${canEdit && !(me.doc&&me.doc.officer&&me.doc.officer.link) ? "#tddoc-officer-review" : "#officer"}" style="--c:var(--s5)"><b>Officer Review 🔒</b><span>Station officers: sign off and approve member task books</span></a>` : ""}
         ${store.sections.filter(s=>s.area==="suppression").map(c=>`<a class="tile" href="#cat-${esc(c.id)}" style="--c:var(--s1)"><b>${esc(c.title)}</b><span>${esc(c.blurb||"")}</span></a>`).join("")}
       </div>
       ${editing?`<button class="btn" type="button" data-act="new-supp">+ Add Fire Suppression category</button>`:""}
@@ -1255,6 +1294,7 @@ function route(){
   else if (h==="td") { html = vTd(); tab="cadre"; }
   else if ((m = h.match(/^tddoc-(.+)$/))) { html = vTdDoc(m[1]); tab="cadre"; }
   else if ((m = h.match(/^td-(.+)$/))) { html = vTdTable(m[1]); tab="cadre"; }
+  else if ((m = h.match(/^roster~(.+)$/))) { rosterFilter = decodeURIComponent(m[1]); rosterMode = "signed"; html = vRoster(); tab="cadre"; }
   else if (h==="roster") { html = vRoster(); tab="cadre"; }
   else if ((m = h.match(/^member-(.+)$/))) { html = vMember(m[1]); tab="cadre"; }
   else if (h==="cadre") { html = canEdit ? (APP ? "" : vCkMoved()) : vCadreGate(); tab="cadre"; }
@@ -1271,6 +1311,7 @@ function render(){
   $("#cadre-view").hidden = !showCadre; view.hidden = showCadre;
   if (showCadre && !cadreStarted && cadreCtx) { cadreStarted = true; try { initCadre(cadreCtx); } catch(err) { console.error(err); } }
   view.innerHTML = html;
+  applyCollapsed();
   if (active && (active==="sog-q"||active==="home-q"||active==="td-q"||active==="dept-q")) { const el = $("#"+active); if (el) { el.focus(); try{ el.setSelectionRange(caret,caret); }catch(e){} } }
   if (h !== lastHash) {
     lastHash = h;
@@ -1281,6 +1322,16 @@ function render(){
     else window.scrollTo(0,0);
   }
 }
+// Every card with a header folds open and closed; the choice is remembered per card title.
+let foldSet = new Set(); try { foldSet = new Set(JSON.parse(localStorage.getItem("cvfd.folded")||"[]")); } catch(e) {}
+function foldKey(card){ const t = card.querySelector(":scope > .card-h h3"); return t ? (location.hash.replace(/-.*/,"")||"#home")+"|"+t.textContent.replace(/\s+\d.*$/,"").trim() : ""; }
+function applyCollapsed(){
+  view.querySelectorAll(".card").forEach(c => { const hd = c.querySelector(":scope > .card-h"); if (!hd) return; const k = foldKey(c);
+    c.classList.add("foldable"); c.classList.toggle("folded", foldSet.has(k)); hd.setAttribute("role","button"); hd.setAttribute("tabindex","0"); hd.setAttribute("aria-expanded", String(!foldSet.has(k))); });
+}
+function toggleFold(hd){ const c = hd.closest(".card"); const k = foldKey(c); if (!k) return; foldSet.has(k) ? foldSet.delete(k) : foldSet.add(k);
+  try { localStorage.setItem("cvfd.folded", JSON.stringify([...foldSet])); } catch(e) {} c.classList.toggle("folded", foldSet.has(k)); hd.setAttribute("aria-expanded", String(!foldSet.has(k))); }
+view.addEventListener("keydown", e => { const hd = e.target.closest && e.target.closest(".card.foldable > .card-h"); if (hd && (e.key==="Enter"||e.key===" ")) { e.preventDefault(); toggleFold(hd); } });
 function takeTagFromHash(){
   const mt = location.hash.match(/^#cat-([^~]+)~(.+)$/);
   if (mt) { catTag = decodeURIComponent(mt[2]); history.replaceState(null, "", "#cat-"+mt[1]); }
@@ -1311,6 +1362,7 @@ view.addEventListener("change", e => {
   }
 });
 view.addEventListener("click", e => {
+  { const hd = e.target.closest(".card.foldable > .card-h"); if (hd && !e.target.closest("a,button,input,select,textarea,label")) { toggleFold(hd); return; } }
   const a = e.target.closest("a[data-hl]"); if (a) { lastHighlight = sogQuery.trim() && !/^\d/.test(sogQuery.trim()) ? sogQuery : ""; }
   const kt = e.target.closest("[data-cattag]"); if (kt) { catTag = kt.dataset.cattag; render(); return; }
   const ct = e.target.closest("[data-ctag]"); if (ct) { classTag = ct.dataset.ctag; render(); return; }
@@ -1340,7 +1392,15 @@ view.addEventListener("click", e => {
       await dl.save({filename:"cvfd-td-export-"+today()+".json", data:new Blob([JSON.stringify({cvfdExport:1, at:nowIso(), docs:out}, null, 1)], {type:"application/json"})});
       toast(Object.keys(out).length+" records exported");
     } catch(err) { toast("Export did not finish."); } tex.disabled = false; })(); return; }
+  const tds = e.target.closest("[data-td-set]"); if (tds) { tds.disabled = true; db.collection("td").doc("main").collection(tds.dataset.tdSet).doc(tds.dataset.id).update({[tds.dataset.f]: tds.dataset.v}).then(()=>toast("Updated"), ()=>{ tds.disabled=false; toast("Could not save."); }); return; }
   const tdr = e.target.closest("[data-td-review]"); if (tdr) { db.collection("td").doc("main").set({...(td.main||{}), lastReview: today()}).then(()=>toast("Review recorded"), ()=>toast("Could not save.")); return; }
+  const cv = e.target.closest("[data-certv]"); if (cv) { cv.disabled = true; const on = cv.dataset.on==="1", k = cv.dataset.k, uid = cv.dataset.certv;
+    const m = roster && roster.list.find(x=>x.id===uid); const c = {...(((m&&m.sffma)||{})[k]||{}), held: on};
+    db.collection("members").doc(uid).update({sffma:{[k]: c}, certCheck:{[k]: on}}).then(()=>toast(on?"Certification turned on":"Certification turned off"), ()=>{ cv.disabled=false; toast("Could not save."); }); return; }
+  const cd = e.target.closest("[data-cadre]"); if (cd) { cd.disabled = true; const on = cd.dataset.on==="1";
+    db.collection("users").doc(cd.dataset.cadre).update({role: on?"cadre":"member"}).then(()=>{ memberRole[cd.dataset.cadre] = on?"cadre":"member"; toast(on?"Cadre access on. It takes effect when they reopen the site.":"Cadre access off"); softRender(); }, ()=>{ cd.disabled=false; toast("Could not save. Only an admin can change this."); }); return; }
+  const cet = e.target.closest("[data-ce-target]"); if (cet) { const n = Math.max(0, parseFloat(($("#ce-target")||{}).value)||0);
+    db.collection("config").doc("ce").set({target:n}).then(()=>toast(n?"CE target set to "+n+" hrs":"CE target cleared"), ()=>toast("Could not save.")); return; }
   const ob = e.target.closest("[data-officer]"); if (ob) { ob.disabled = true; (async()=>{ try {
       const on = ob.dataset.on==="1"; await db.collection("members").doc(ob.dataset.officer).update({officer: on ? await officerCopy() : null});
       toast(on?"Verified as officer":"Officer access removed");

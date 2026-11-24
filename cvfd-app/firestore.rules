@@ -36,11 +36,14 @@ service cloud.firestore {
       allow write: if staff();
     }
 
+    // Site settings (CE hours target): everyone signed in reads, staff set.
+    match /config/{id} { allow read: if signedIn(); allow write: if staff(); }
+
     // Member training records: the member and staff.
     // Members cannot mark themselves as a verified officer or as reviewed: only staff set those.
     match /members/{uid} {
       function self() { return signedIn() && request.auth.uid == uid; }
-      function staffOnly() { return ['officer', 'reviewedAt']; }
+      function staffOnly() { return ['officer', 'reviewedAt', 'certCheck']; }
       allow read, delete: if self() || staff();
       allow create: if staff() || (self() && !request.resource.data.keys().hasAny(staffOnly()));
       allow update: if staff() || (self() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(staffOnly()));
