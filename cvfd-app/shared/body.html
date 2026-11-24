@@ -241,10 +241,13 @@ async function initMe(user){
 }
 const RANKS = ["Cadet","Probationary Firefighter","Firefighter","Engine Operator","Lieutenant","Captain","Battalion Chief","Deputy / Assistant Chief","Fire Chief"];
 const EMS_LEVELS = ["Basic","Advanced","Paramedic"];
+const SFFMA = [["ff1","Firefighter I"],["ff2","Firefighter II"],["hzA","HazMat Awareness"],["hzO","HazMat Operations"]];
+function sffmaHeld(m){ const c = (m && m.sffma) || {}; return SFFMA.filter(([k])=>c[k] && c[k].held); }
+function sffmaCe(hours, year){ return Math.round(hours.filter(h=>h.sffma && String(h.date||"").startsWith(String(year))).reduce((s,h)=>s+(+h.hours||0),0)*100)/100; }
 const MEMBER_TYPES = ["Volunteer","Fire Duty Crew","EMS Duty Crew"];
 const ASSIGNMENTS = [["specops","Special Operations"],["td","Training Division"],["admin","Administrative"]];
 function typeOf(m){ return m.memberType==="Duty Crew" ? "Fire Duty Crew" : (m.memberType||""); }
-function memberTags(m){ return [m.officer&&m.officer.link?"Verified officer":"", typeOf(m), m.ems&&"EMS "+m.ems, ...(m.assign||[]).map(k=>(ASSIGNMENTS.find(a=>a[0]===k)||[,k])[1])].filter(Boolean); }
+function memberTags(m){ return [m.officer&&m.officer.link?"Verified officer":"", typeOf(m), m.ems&&"EMS "+m.ems, sffmaHeld(m).length&&"SFFMA "+sffmaHeld(m).map(([,l])=>l.replace("Firefighter ","FF ").replace("HazMat ","HM ")).join("/"), ...(m.assign||[]).map(k=>(ASSIGNMENTS.find(a=>a[0]===k)||[,k])[1])].filter(Boolean); }
 async function officerCopy(){
   const d = await db.collection("td").doc("main").collection("docs").doc("officer-review").get();
   const r = d.exists ? d.data() : null; const link = r && (String(r.body||"").match(/https:\/\/[^\s)]+/)||[])[0];
@@ -347,9 +350,17 @@ function vMe(){
         <label class="field"><span>Category</span><select id="hf-cat">${ISO_CATS.map(([k,l])=>`<option value="${k}">${l}</option>`).join("")}</select></label>
         <label class="field"><span>Hours</span><input type="number" id="hf-hours" min="0.25" max="24" step="0.25" required inputmode="decimal"></label>
         <label class="field"><span>What was it?</span><input type="text" id="hf-note" placeholder="e.g. Hose drill, Station 2"></label>
+        <label class="chk" style="grid-column:1/-1"><input type="checkbox" id="hf-sffma" ${sffmaHeld(p).length?"checked":""}><span>Counts toward SFFMA CE</span></label>
         <div class="actions" style="grid-column:1/-1"><button class="btn primary" type="submit">Add hours</button></div>
       </form>
-      ${yHours.length?`<h4>${yHours.length} entr${yHours.length===1?"y":"ies"} in ${hoursYear}</h4>${yHours.map(h=>`<div class="rowx"><div><b>${esc(h.hours)} hrs · ${esc((ISO_CATS.find(c=>c[0]===h.cat)||[,h.cat])[1])}</b><small>${fmtDate(h.date)}${h.note?" · "+esc(h.note):""}</small></div><button class="xbtn" type="button" data-del-hours="${esc(h.id)}" aria-label="Delete entry">×</button></div>`).join("")}`:`<p class="sub">No hours logged for ${hoursYear} yet.</p>`}
+      ${yHours.length?`<h4>${yHours.length} entr${yHours.length===1?"y":"ies"} in ${hoursYear}</h4>${yHours.map(h=>`<div class="rowx"><div><b>${esc(h.hours)} hrs · ${esc((ISO_CATS.find(c=>c[0]===h.cat)||[,h.cat])[1])}</b><small>${fmtDate(h.date)}${h.note?" · "+esc(h.note):""}${h.sffma?" · SFFMA CE":""}</small></div><button class="xbtn" type="button" data-del-hours="${esc(h.id)}" aria-label="Delete entry">×</button></div>`).join("")}`:`<p class="sub">No hours logged for ${hoursYear} yet.</p>`}
+    </div></div>
+
+    <div class="card"><div class="card-h"><h3>SFFMA certifications & CE</h3></div><div class="card-b">
+      <form id="sf" data-keep>
+      ${SFFMA.map(([k,l])=>{ const c = (p.sffma||{})[k]||{}; return `<div class="sffma-row"><label class="chk"><input type="checkbox" id="sf-${k}" ${c.held?"checked":""}><span>${l}</span></label><label class="field"><span>Date certified</span><input type="date" id="sf-${k}-date" value="${esc(c.date||"")}"></label><label class="field"><span>Cert #</span><input type="text" id="sf-${k}-num" value="${esc(c.number||"")}"></label></div>`; }).join("")}
+      <div class="actions"><button class="btn primary" type="submit">Save SFFMA certifications</button></div></form>
+      ${sffmaHeld(p).length?`<div class="prog"><div class="ph"><b>SFFMA CE hours ${hoursYear}</b><span>${sffmaCe(me.hours, hoursYear)} hrs</span></div></div><p class="sub">Count training toward SFFMA CE by ticking "Counts toward SFFMA CE" when you log hours above. Last year: ${sffmaCe(me.hours, hoursYear-1)} hrs.</p>`:`<p class="sub">Check the SFFMA certifications you hold. Then log CE with your training hours.</p>`}
     </div></div>
 
     <div class="card"><div class="card-h"><h3>Certifications</h3></div><div class="card-b">
@@ -436,7 +447,7 @@ function ago(iso){ if (!iso) return ""; const s = (Date.now()-new Date(iso).getT
 function needsReview(m){ return !!(m.updatedAt && (!m.reviewedAt || m.updatedAt > m.reviewedAt)); }
 async function saveIsoSummary(){
   const T = isoTotals(me.hours, hoursYear, me.doc && me.doc.designation);
-  try { await meRef().update({iso:{[hoursYear]:{by:T.by, applied:T.applied, req:T.req, pct:T.pct}}}); } catch(e) {}
+  try { await meRef().update({iso:{[hoursYear]:{by:T.by, applied:T.applied, req:T.req, pct:T.pct}}, sffmaCe:{[hoursYear]: sffmaCe(me.hours, hoursYear)}}); } catch(e) {}
 }
 
 // ---------- staff roster ----------
@@ -494,6 +505,7 @@ function vMember(uid){
     <div class="doc-h"><span class="num">${esc([m.rank, m.station].filter(Boolean).join(" · ")||"Member")}</span><h1>${esc(memberName(m))}</h1><span class="meta">${esc([...memberTags(m), (m.designation||"Firefighter")+" (ISO)"].join(" · "))}${m.empId?" · ID "+esc(m.empId):""}</span></div>
     <div class="card"><div class="card-b"><div class="rowx"><div><b>${needsReview(m)?`<span class="pill bad">New changes</span> `:`<span class="pill ok">Reviewed</span> `}${esc(m.lastChange||"No changes logged yet")}</b><small>${m.updatedAt?"Last update "+esc(ago(m.updatedAt)):""}${m.reviewedAt?" · Reviewed "+esc(ago(m.reviewedAt)):""}</small></div>${needsReview(m)?`<button class="btn sm primary" type="button" data-review="${esc(m.id)}">Mark reviewed</button>`:""}</div></div></div>
     <div class="card"><div class="card-b"><div class="rowx"><div><b>${m.officer&&m.officer.link?`<span class="pill ok">Verified officer</span>`:"Officer Review access"}</b><small>${m.officer&&m.officer.link?"Sees the Officer Review tile. Verified "+esc(ago(m.officer.at)):"Verify only real station officers. It gives them the officer review link."}</small></div><button class="btn sm ${m.officer&&m.officer.link?"":"primary"}" type="button" data-officer="${esc(m.id)}" data-on="${m.officer&&m.officer.link?"0":"1"}">${m.officer&&m.officer.link?"Remove":"Verify officer"}</button></div></div></div>
+    ${sffmaHeld(m).length?`<div class="card"><div class="card-h"><h3>SFFMA</h3></div><div class="card-b">${sffmaHeld(m).map(([k,l])=>{ const c = m.sffma[k]; return `<div class="tbl"><span><b>${l}</b></span><span>${c.date?"Certified "+fmtDate(c.date):"No date"}${c.number?" · #"+esc(c.number):""}</span></div>`; }).join("")}<div class="tbl"><span><b>SFFMA CE ${y}</b></span><span>${sffmaCe(memberView.hours, y)} hrs (last year ${sffmaCe(memberView.hours, y-1)})</span></div></div></div>`:""}
     <div class="card"><div class="card-h"><h3>ISO hours ${y}</h3></div><div class="card-b">
       <div class="prog"><div class="ph"><b>${T.applied} of ${T.req} hrs</b><span>${T.pct}%</span></div>${bar(T.pct)}</div>
       ${ISO_CATS.filter(([k])=>T.need.includes(k)||T.by[k]).map(([k,l,t])=>`<div class="tbl"><span>${l}</span><span>${T.by[k]}${t&&T.need.includes(k)?" / "+t:""} hrs</span></div>`).join("")}
@@ -555,13 +567,15 @@ function vTdMembers(){
   const head = `<div class="card-h"><h3>From member records</h3></div>`;
   if (!roster || !roster.ready) return `<div class="card">${head}<div class="card-b"><p class="sub">${roster&&roster.failed?"Member records could not load.":"Loading member records…"}</p></div></div>`;
   const L = roster.list, has = f => L.filter(f).length;
-  const grid = [["Members signed up", L.length],...MEMBER_TYPES.map(t=>[t, has(m=>typeOf(m)===t)]),...EMS_LEVELS.map(l=>["EMS "+l, has(m=>m.ems===l)]),...ASSIGNMENTS.map(([k,l])=>[l, has(m=>(m.assign||[]).includes(k))]),["Verified officers", has(m=>m.officer&&m.officer.link)],["Waiting for your review", has(needsReview)],["No rank entered", has(m=>!m.rank)]];
+  const grid = [["Members signed up", L.length],...MEMBER_TYPES.map(t=>[t, has(m=>typeOf(m)===t)]),...EMS_LEVELS.map(l=>["EMS "+l, has(m=>m.ems===l)]),...ASSIGNMENTS.map(([k,l])=>[l, has(m=>(m.assign||[]).includes(k))]),["SFFMA certified", has(m=>sffmaHeld(m).length)],...SFFMA.map(([k,l])=>["SFFMA "+l, has(m=>sffmaHeld(m).some(x=>x[0]===k))]),["Verified officers", has(m=>m.officer&&m.officer.link)],["Waiting for your review", has(needsReview)],["No rank entered", has(m=>!m.rank)]];
   const ranks = RANKS.map(r=>[r, has(m=>m.rank===r)]).filter(x=>x[1]);
   const norm = x => String(x||"").toLowerCase().split(/[^a-z]+/).filter(Boolean).sort().join(" ");
   const tracked = new Set((td.rows.probation||[]).flatMap(r=>[r.memberId, norm(r.name)]).filter(Boolean));
   const probies = L.filter(m=>m.rank==="Probationary Firefighter").sort((a,b)=>memberName(a).localeCompare(memberName(b)));
   return `<div class="card">${head}<div class="card-b">${metricGrid(grid)}
     ${ranks.length?`<h4>By rank</h4>${ranks.map(([r,n])=>`<div class="tbl"><span><b>${esc(r)}</b></span><span>${n}</span></div>`).join("")}`:""}
+    ${(()=>{ const y = new Date().getFullYear(), sf = L.filter(m=>sffmaHeld(m).length).sort((a,b)=>((a.sffmaCe||{})[y]||0)-((b.sffmaCe||{})[y]||0));
+      return sf.length?`<h4>SFFMA CE hours ${y} (lowest first)</h4>${sf.map(m=>`<div class="tbl"><span><a href="#member-${esc(m.id)}" style="color:inherit"><b>${esc(memberName(m))}</b></a></span><span>${(m.sffmaCe||{})[y]||0} hrs · ${sffmaHeld(m).map(([,l])=>esc(l)).join(", ")}</span></div>`).join("")}`:""; })()}
     <h4>Probationary members</h4>
     ${probies.length?probies.map(m=>{ const bks = Object.values(m.books||{}); const inT = tracked.has(m.id) || tracked.has(norm(memberName(m)));
       return `<div class="rowx"><div><a href="#member-${esc(m.id)}" style="color:inherit"><b>${esc(memberName(m))}</b></a><small>${bks.length?bks.map(b=>`${esc(b.title)}: ${b.done||0} of ${b.total||"?"}`).join(" · "):"No phase book started"}${m.station?" · Stn "+esc(m.station):""}</small></div>${inT?`<span class="pill ok">In tracker</span>`:`<button class="btn sm" type="button" data-td-probie="${esc(m.id)}">Add to tracker</button>`}</div>`; }).join(""):`<p class="sub">No members have entered the rank Probationary Firefighter yet.</p>`}
@@ -1356,9 +1370,9 @@ view.addEventListener("click", e => {
   if (act==="new-sizeup") return save("sections", null, {area:"sizeup", title:"First-In Size-Up", blurb:"", order:0});
 });
 view.addEventListener("submit", async e => {
-  const f = e.target; if (!["pf","hf","cf"].includes(f.id)) return;
+  const f = e.target; if (!["pf","hf","cf","sf"].includes(f.id)) return;
   e.preventDefault();
-  const vals = Object.fromEntries([...f.querySelectorAll("input,select,textarea")].filter(el=>el.id).map(el=>[el.id, String(el.value||"").trim()]));
+  const vals = Object.fromEntries([...f.querySelectorAll("input,select,textarea")].filter(el=>el.id).map(el=>[el.id, el.type==="checkbox" ? (el.checked?"1":"") : String(el.value||"").trim()]));
   const v = id => vals[id] || "";
   const btn = f.querySelector("button[type=submit]"); if (btn) btn.disabled = true;
   try {
@@ -1368,9 +1382,13 @@ view.addEventListener("submit", async e => {
       const prof = {name:v("pf-name"), rank:v("pf-rank"), memberType:v("pf-memberType"), ems:v("pf-ems"), assign, station:v("pf-station"), empId:v("pf-empId"), designation:v("pf-designation")||"Firefighter"};
       await meRef().update(prof);
       me.doc = {...me.doc, ...prof}; await saveIsoSummary(); await touch("Updated profile"); toast("Profile saved");
+    } else if (f.id==="sf") {
+      const sffma = Object.fromEntries(SFFMA.map(([k])=>[k, {held: v("sf-"+k)==="1", date: v("sf-"+k+"-date"), number: v("sf-"+k+"-num")}]));
+      await meRef().update({sffma}); me.doc = {...me.doc, sffma}; await saveIsoSummary();
+      await touch("Updated SFFMA certifications"); toast("SFFMA certifications saved");
     } else if (f.id==="hf") {
       const hrs = parseFloat(v("hf-hours")); if (!(hrs>0)) { toast("Enter the hours"); return; }
-      const rec = {date:v("hf-date")||today(), cat:v("hf-cat"), hours:Math.round(hrs*100)/100, note:v("hf-note"), added:today(), addedAt:nowIso()};
+      const rec = {date:v("hf-date")||today(), cat:v("hf-cat"), hours:Math.round(hrs*100)/100, note:v("hf-note"), sffma: v("hf-sffma")==="1", added:today(), addedAt:nowIso()};
       const ref = await meRef().collection("hours").add(rec);
       if (!me.hours.some(h=>h.id===ref.id)) me.hours = [{id:ref.id, ...rec}, ...me.hours];
       hoursYear = +rec.date.slice(0,4) || hoursYear; await saveIsoSummary(); await touch(`Logged ${rec.hours} hrs (${(ISO_CATS.find(c=>c[0]===rec.cat)||[,rec.cat])[1]})`); f.reset(); toast("Hours added");
