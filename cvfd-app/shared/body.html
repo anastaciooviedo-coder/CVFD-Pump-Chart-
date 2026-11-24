@@ -239,11 +239,12 @@ async function initMe(user){
     ref.collection("books").onSnapshot(s => { me.books = Object.fromEntries(s.docs.map(d=>[d.id,{id:d.id,...d.data()}])); tick(); }, fail);
   } catch(e) { me.failed = true; softRender(); }
 }
-const RANKS = ["Cadet","Probationary Firefighter","Firefighter","Engine Operator","Lieutenant","Captain","Battalion Chief","Deputy / Assistant Chief","Fire Chief","EMT","Advanced EMT","Paramedic","EMS Supervisor"];
+const RANKS = ["Cadet","Probationary Firefighter","Firefighter","Engine Operator","Lieutenant","Captain","Battalion Chief","Deputy / Assistant Chief","Fire Chief"];
+const EMS_LEVELS = ["Basic","Advanced","Paramedic"];
 const MEMBER_TYPES = ["Volunteer","Fire Duty Crew","EMS Duty Crew"];
 const ASSIGNMENTS = [["specops","Special Operations"],["td","Training Division"],["admin","Administrative"]];
 function typeOf(m){ return m.memberType==="Duty Crew" ? "Fire Duty Crew" : (m.memberType||""); }
-function memberTags(m){ return [m.officer&&m.officer.link?"Verified officer":"", typeOf(m), ...(m.assign||[]).map(k=>(ASSIGNMENTS.find(a=>a[0]===k)||[,k])[1])].filter(Boolean); }
+function memberTags(m){ return [m.officer&&m.officer.link?"Verified officer":"", typeOf(m), m.ems&&"EMS "+m.ems, ...(m.assign||[]).map(k=>(ASSIGNMENTS.find(a=>a[0]===k)||[,k])[1])].filter(Boolean); }
 async function officerCopy(){
   const d = await db.collection("td").doc("main").collection("docs").doc("officer-review").get();
   const r = d.exists ? d.data() : null; const link = r && (String(r.body||"").match(/https:\/\/[^\s)]+/)||[])[0];
@@ -327,6 +328,7 @@ function vMe(){
       <div class="grid2">
         <label class="field"><span>Rank</span><select id="pf-rank"><option value="">Choose your rank</option>${[...RANKS, ...(p.rank&&!RANKS.includes(p.rank)?[p.rank]:[])].map(r=>`<option ${p.rank===r?"selected":""}>${esc(r)}</option>`).join("")}</select></label>
         <label class="field"><span>Member type</span><select id="pf-memberType"><option value="">Choose one</option>${MEMBER_TYPES.map(r=>`<option ${typeOf(p)===r?"selected":""}>${r}</option>`).join("")}</select></label>
+        <label class="field"><span>EMS level</span><select id="pf-ems"><option value="">None</option>${EMS_LEVELS.map(r=>`<option ${p.ems===r?"selected":""}>${r}</option>`).join("")}</select></label>
         <label class="field"><span>Station / shift</span><input type="text" id="pf-station" value="${esc(p.station||"")}"></label>
         <label class="field"><span>Employee ID</span><input type="text" id="pf-empId" value="${esc(p.empId||"")}"></label>
         <label class="field"><span>ISO designation</span><select id="pf-designation">${Object.keys(DESIG).map(d=>`<option ${ (p.designation||"Firefighter")===d?"selected":""}>${d}</option>`).join("")}</select></label>
@@ -553,7 +555,7 @@ function vTdMembers(){
   const head = `<div class="card-h"><h3>From member records</h3></div>`;
   if (!roster || !roster.ready) return `<div class="card">${head}<div class="card-b"><p class="sub">${roster&&roster.failed?"Member records could not load.":"Loading member records…"}</p></div></div>`;
   const L = roster.list, has = f => L.filter(f).length;
-  const grid = [["Members signed up", L.length],...MEMBER_TYPES.map(t=>[t, has(m=>typeOf(m)===t)]),...ASSIGNMENTS.map(([k,l])=>[l, has(m=>(m.assign||[]).includes(k))]),["Verified officers", has(m=>m.officer&&m.officer.link)],["Waiting for your review", has(needsReview)],["No rank entered", has(m=>!m.rank)]];
+  const grid = [["Members signed up", L.length],...MEMBER_TYPES.map(t=>[t, has(m=>typeOf(m)===t)]),...EMS_LEVELS.map(l=>["EMS "+l, has(m=>m.ems===l)]),...ASSIGNMENTS.map(([k,l])=>[l, has(m=>(m.assign||[]).includes(k))]),["Verified officers", has(m=>m.officer&&m.officer.link)],["Waiting for your review", has(needsReview)],["No rank entered", has(m=>!m.rank)]];
   const ranks = RANKS.map(r=>[r, has(m=>m.rank===r)]).filter(x=>x[1]);
   const norm = x => String(x||"").toLowerCase().split(/[^a-z]+/).filter(Boolean).sort().join(" ");
   const tracked = new Set((td.rows.probation||[]).flatMap(r=>[r.memberId, norm(r.name)]).filter(Boolean));
@@ -1363,7 +1365,7 @@ view.addEventListener("submit", async e => {
     await ensureMe();
     if (f.id==="pf") {
       const assign = [...f.querySelectorAll("[data-assign]")].filter(x=>x.checked).map(x=>x.dataset.assign);
-      const prof = {name:v("pf-name"), rank:v("pf-rank"), memberType:v("pf-memberType"), assign, station:v("pf-station"), empId:v("pf-empId"), designation:v("pf-designation")||"Firefighter"};
+      const prof = {name:v("pf-name"), rank:v("pf-rank"), memberType:v("pf-memberType"), ems:v("pf-ems"), assign, station:v("pf-station"), empId:v("pf-empId"), designation:v("pf-designation")||"Firefighter"};
       await meRef().update(prof);
       me.doc = {...me.doc, ...prof}; await saveIsoSummary(); await touch("Updated profile"); toast("Profile saved");
     } else if (f.id==="hf") {
