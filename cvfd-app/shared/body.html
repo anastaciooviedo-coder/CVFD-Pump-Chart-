@@ -71,8 +71,24 @@ fetch("sogs.json").then(r => { if(!r.ok) throw new Error(r.status); return r.jso
 }).catch(e => { sogErr = e; render(); });
 
 // ---------- shared store (training, size-up, tools) ----------
+// Off claude.ai (e.g. the Netlify copy) there is no shared database: fall back to a read-only snapshot.
+let snapTried = false;
+async function useSnapshot(){
+  if (store.ready || snapTried) { if (!store.ready) { store.failed = true; render(); } return; }
+  snapTried = true;
+  try {
+    const r = await fetch("store.json", {cache:"no-cache"}); if (!r.ok) throw new Error(r.status);
+    const d = await r.json();
+    for (const name of ["sections","items","tools"]) {
+      const rows = Array.isArray(d[name]) ? d[name] : [];
+      store[name] = [...rows, ...(name==="items"?STATIC_ITEMS.filter(x=>!rows.some(y=>y.id===x.id)):[])].sort((a,b)=>(a.order??0)-(b.order??0));
+    }
+    store.ready = true; store.failed = false;
+  } catch(e) { store.failed = true; }
+  render();
+}
 (async () => {
-  const timer = setTimeout(() => { if(!store.ready){ store.failed = true; render(); } }, 10000);
+  const timer = setTimeout(() => { if(!store.ready){ useSnapshot(); } }, 10000);
   try {
     db = await claude.use("db");
     const user = await claude.use("user");
@@ -83,7 +99,7 @@ fetch("sogs.json").then(r => { if(!r.ok) throw new Error(r.status); return r.jso
     userNs = user;
     if (user && db && MODE!=="guide") initMe(user); else { me.noUser = true; }
     cadreCtx.db = db; authKnown = true;
-    if (!db) { clearTimeout(timer); store.failed = true; render(); return; }
+    if (!db) { clearTimeout(timer); useSnapshot(); return; }
     let pending = 3;
     for (const name of ["sections","items","tools"]) {
       db.collection(name).onSnapshot(snap => {
@@ -493,6 +509,24 @@ function tdMetrics(){
     probie: [["Probationary members", R("probation").length],["Phase 1 due next 45 days", cnt("probation", due45("p1due","p1"))],["Phase 2 due next 45 days", cnt("probation", due45("p2due","p2"))],["Phase 3 due next 45 days", cnt("probation", due45("p3due","p3"))],["Taskbook members loaded", R("taskbook").length],["Engine Operator open", cnt("taskbook", r=>/^open/i.test(r.eoStatus||""))],["Foundations open", cnt("taskbook", r=>/^yes/i.test(r.fdnOpen||""))],["Books needing attention", cnt("books", r=>r.status==="Needs Attention")]],
   };
 }
+function vTdMembers(){
+  startRoster();
+  const head = `<div class="card-h"><h3>From member records</h3></div>`;
+  if (!roster || !roster.ready) return `<div class="card">${head}<div class="card-b"><p class="sub">${roster&&roster.failed?"Member records could not load.":"Loading member records…"}</p></div></div>`;
+  const L = roster.list, has = f => L.filter(f).length;
+  const grid = [["Members signed up", L.length],["Volunteer", has(m=>m.memberType==="Volunteer")],["Duty Crew", has(m=>m.memberType==="Duty Crew")],...ASSIGNMENTS.map(([k,l])=>[l, has(m=>(m.assign||[]).includes(k))]),["Verified officers", has(m=>m.officer&&m.officer.link)],["Waiting for your review", has(needsReview)],["No rank entered", has(m=>!m.rank)]];
+  const ranks = RANKS.map(r=>[r, has(m=>m.rank===r)]).filter(x=>x[1]);
+  const norm = x => String(x||"").toLowerCase().split(/[^a-z]+/).filter(Boolean).sort().join(" ");
+  const tracked = new Set((td.rows.probation||[]).flatMap(r=>[r.memberId, norm(r.name)]).filter(Boolean));
+  const probies = L.filter(m=>m.rank==="Probationary Firefighter").sort((a,b)=>memberName(a).localeCompare(memberName(b)));
+  return `<div class="card">${head}<div class="card-b">${metricGrid(grid)}
+    ${ranks.length?`<h4>By rank</h4>${ranks.map(([r,n])=>`<div class="tbl"><span><b>${esc(r)}</b></span><span>${n}</span></div>`).join("")}`:""}
+    <h4>Probationary members</h4>
+    ${probies.length?probies.map(m=>{ const bks = Object.values(m.books||{}); const inT = tracked.has(m.id) || tracked.has(norm(memberName(m)));
+      return `<div class="rowx"><div><a href="#member-${esc(m.id)}" style="color:inherit"><b>${esc(memberName(m))}</b></a><small>${bks.length?bks.map(b=>`${esc(b.title)}: ${b.done||0} of ${b.total||"?"}`).join(" · "):"No phase book started"}${m.station?" · Stn "+esc(m.station):""}</small></div>${inT?`<span class="pill ok">In tracker</span>`:`<button class="btn sm" type="button" data-td-probie="${esc(m.id)}">Add to tracker</button>`}</div>`; }).join(""):`<p class="sub">No members have entered the rank Probationary Firefighter yet.</p>`}
+    <p class="sub">Counts come from the profiles members fill in. Open the <a href="#roster">Member roster</a> to review and verify them.</p>
+  </div></div>`;
+}
 function metricGrid(list){ return `<div class="mgrid">${list.map(([l,v])=>`<div class="metric"><b>${v}</b><span>${esc(l)}</span></div>`).join("")}</div>`; }
 function vTd(){
   if (!canEdit) return vCadreGate();
@@ -514,6 +548,7 @@ function vTd(){
     <div class="card"><div class="card-h"><h3>Probationary / taskbooks</h3></div><div class="card-b">${metricGrid(M.probie)}
       ${soon.length?`<h4>Phases due in the next 45 days</h4>${soon.map(x=>`<a class="rowx" href="#" data-td-edit="probation" data-id="${esc(x.r.id)}" style="text-decoration:none;color:inherit"><div><b>${esc(x.r.name)}</b><small>Phase ${x.n} due ${fmtDate(x.r["p"+x.n+"due"])} · ${x.d} days</small></div><span class="chev">›</span></a>`).join("")}`:""}
     </div></div>
+    ${vTdMembers()}
     <div class="card"><div class="card-h"><h3>Quick review</h3></div><div class="card-b">
       <div class="tbl"><span><b>TCFP TPA</b></span><span>Any course approaching start without approval?</span></div>
       <div class="tbl"><span><b>TCFP records</b></span><span>Any completed course awaiting closeout or archive?</span></div>
@@ -521,6 +556,7 @@ function vTd(){
       <div class="tbl"><span><b>Open books</b></span><span>Who is stalled on permit, pump-out, aerial or other skills?</span></div>
       <div class="tbl"><span><b>Action items</b></span><span>What must be completed this week?</span></div>
     </div></div>
+    ${MODE==="td"?`<div class="card"><div class="card-h"><h3>Move to the new CVFD site</h3></div><div class="card-b"><p class="sub">Saves the training and academy content, the dashboard sheets and Cadre Material as one file. Load it on the new site from Account › Load starting data. Member records are not included: members sign up and fill in their own profile there.</p><button class="btn sm" type="button" data-td-export>Export data file</button></div></div>`:""}
     <h2>Sheets</h2>
     <div class="list">${Object.entries(TD_TABLES).filter(([k])=>k!=="docs").map(([k,t])=>`<a class="row-btn" href="#td-${k}" style="--c:var(--s3)"><span class="n">${(td.rows[k]||[]).length}</span><span class="m"><b>${esc(t.title)}</b></span><span class="chev">›</span></a>`).join("")}</div>
   </section>`;
@@ -1237,6 +1273,17 @@ view.addEventListener("click", e => {
   const ot = e.target.closest("[data-ot]"); if (ot) { const bk = me.books[bookKey(...secTagOf(ot.dataset.item))]; const cur = bk && bk.checks && bk.checks[ot.dataset.ot]; const next = !cur ? "O" : cur.ot==="O" ? "T" : null; setCheck(ot.dataset.item, ot.dataset.ot, next ? {d: today(), ot: next} : null); return; }
   const tde = e.target.closest("[data-td-edit]"); if (tde) { e.preventDefault(); const r = (td.rows[tde.dataset.tdEdit]||[]).find(x=>x.id===tde.dataset.id); if (r) openTdEditor(tde.dataset.tdEdit, r); return; }
   const tdn = e.target.closest("[data-td-new]"); if (tdn) { openTdEditor(tdn.dataset.tdNew, {}); return; }
+  const tpb = e.target.closest("[data-td-probie]"); if (tpb) { const m = roster && roster.list.find(x=>x.id===tpb.dataset.tdProbie); if (!m) return; tpb.disabled = true;
+    const rows = td.rows.probation||[]; db.collection("td").doc("main").collection("probation").add({name: memberName(m), memberId: m.id, notes: "Added from member records", order: rows.length ? Math.max(...rows.map(r=>r.order??0))+1 : 0}).then(()=>toast("Added to Probationary Phases. Open it to set the dates."), ()=>{ tpb.disabled=false; toast("Could not save."); }); return; }
+  const tex = e.target.closest("[data-td-export]"); if (tex) { tex.disabled = true; (async()=>{ try {
+      const out = {};
+      for (const c of ["sections","items","tools"]) (await db.collection(c).get()).docs.forEach(d=>{ out[c+"/"+d.id] = d.data(); });
+      const base = db.collection("td").doc("main"); const m = await base.get(); if (m.exists) out["td/main"] = m.data();
+      for (const k of Object.keys(TD_TABLES)) (await base.collection(k).get()).docs.forEach(d=>{ out["td/main/"+k+"/"+d.id] = d.data(); });
+      const dl = await claude.use("downloads"); if (!dl) throw new Error("no downloads");
+      await dl.save({filename:"cvfd-td-export-"+today()+".json", data:new Blob([JSON.stringify({cvfdExport:1, at:nowIso(), docs:out}, null, 1)], {type:"application/json"})});
+      toast(Object.keys(out).length+" records exported");
+    } catch(err) { toast("Export did not finish."); } tex.disabled = false; })(); return; }
   const tdr = e.target.closest("[data-td-review]"); if (tdr) { db.collection("td").doc("main").set({...(td.main||{}), lastReview: today()}).then(()=>toast("Review recorded"), ()=>toast("Could not save.")); return; }
   const ob = e.target.closest("[data-officer]"); if (ob) { ob.disabled = true; (async()=>{ try {
       const on = ob.dataset.on==="1"; await db.collection("members").doc(ob.dataset.officer).update({officer: on ? await officerCopy() : null});

@@ -142,22 +142,42 @@
       });
     } catch (e) { list.textContent = errText(e); }
   }
+  async function writeDocs(data, st) {
+    const paths = Object.keys(data); let done = 0;
+    for (let i = 0; i < paths.length; i += 400) {
+      const b = fs.batch();
+      paths.slice(i, i + 400).forEach(p => b.set(fs.doc(p), data[p]));
+      await b.commit(); done += Math.min(400, paths.length - i); st.textContent = `Loaded ${done} of ${paths.length}…`;
+    }
+    return paths.length;
+  }
   async function seedSheet() {
-    const st = h("p", { text: "Copies the SOG categories, training content, academy, TD dashboard and check-in weeks from the claude.ai apps into this app. Safe to run again: it overwrites with the same data." });
-    const btn = h("button", { class: "cv-btn", type: "button", text: "Load it", onclick: async () => {
-      btn.disabled = true;
-      try {
-        const data = await (await fetch("seed/seed.json")).json();
-        const paths = Object.keys(data); let done = 0;
-        for (let i = 0; i < paths.length; i += 400) {
-          const b = fs.batch();
-          paths.slice(i, i + 400).forEach(p => b.set(fs.doc(p), data[p]));
-          await b.commit(); done += Math.min(400, paths.length - i); st.textContent = `Loaded ${done} of ${paths.length}…`;
-        }
-        st.textContent = `Done. Loaded ${paths.length} records.`; setTimeout(() => { closeOverlay(); location.reload(); }, 1200);
-      } catch (e) { st.textContent = errText(e); btn.disabled = false; }
+    const st = h("p", { text: "Step 1 loads the Field Guide content (Must Knows, Ref, size-up scripts, department tools). Step 2 loads the file you saved with Export data file on the TD Master Dashboard in the claude.ai Training Division app: training, academy, dashboard sheets and Cadre Material. Safe to run again: it overwrites with the same data." });
+    const finish = n => { st.textContent = `Done. Loaded ${n} records.`; };
+    const guideBtn = h("button", { class: "cv-btn", type: "button", text: "1. Load Field Guide content", onclick: async () => {
+      guideBtn.disabled = true;
+      try { finish(await writeDocs(await (await fetch("seed/guide.json", { cache: "no-cache" })).json(), st)); }
+      catch (e) { st.textContent = errText(e); }
+      guideBtn.disabled = false;
     } });
-    showOverlay(h("div", { class: "cv-card" }, h("h1", { text: "Load starting data" }), st, btn, h("button", { class: "cv-btn alt", type: "button", text: "Back", onclick: accountSheet })));
+    const file = h("input", { type: "file", accept: ".json,application/json", style: "display:none", onchange: async () => {
+      const f = file.files && file.files[0]; if (!f) return;
+      try {
+        const j = JSON.parse(await f.text());
+        const docs = j && j.cvfdExport && j.docs;
+        if (!docs || typeof docs !== "object") throw { message: "That isn't a Training Division export file." };
+        const ok = {};
+        for (const [p, v] of Object.entries(docs)) {
+          const seg = p.split("/");
+          if (seg.length % 2 === 0 && /^(sections|items|tools|td|weeks)$/.test(seg[0]) && v && typeof v === "object") ok[p] = v;
+        }
+        finish(await writeDocs(ok, st));
+      } catch (e) { st.textContent = errText(e); }
+      file.value = "";
+    } });
+    const tdBtn = h("button", { class: "cv-btn", type: "button", text: "2. Load Training Division file", onclick: () => file.click() });
+    showOverlay(h("div", { class: "cv-card" }, h("h1", { text: "Load starting data" }), st, guideBtn, tdBtn, file,
+      h("button", { class: "cv-btn alt", type: "button", text: "Done", onclick: () => { closeOverlay(); location.reload(); } })));
   }
   const toastMsg = m => (window.guideToast ? window.guideToast(m) : null);
 

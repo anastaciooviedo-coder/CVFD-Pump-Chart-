@@ -30,8 +30,13 @@ service cloud.firestore {
     match /td/{rest=**}    { allow read, write: if staff(); }
 
     // Member training records: the member and staff.
+    // Members cannot mark themselves as a verified officer or as reviewed: only staff set those.
     match /members/{uid} {
-      allow read, write: if signedIn() && (request.auth.uid == uid || staff());
+      function self() { return signedIn() && request.auth.uid == uid; }
+      function staffOnly() { return ['officer', 'reviewedAt']; }
+      allow read, delete: if self() || staff();
+      allow create: if staff() || (self() && !request.resource.data.keys().hasAny(staffOnly()));
+      allow update: if staff() || (self() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(staffOnly()));
       match /{sub}/{doc} { allow read, write: if signedIn() && (request.auth.uid == uid || staff()); }
     }
   }
