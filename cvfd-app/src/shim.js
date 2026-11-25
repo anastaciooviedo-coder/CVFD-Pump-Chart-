@@ -60,10 +60,15 @@
     const name = h("input", { id: "cv-name", autocomplete: "name", placeholder: "Last, First" });
     const email = h("input", { id: "cv-email", type: "email", autocomplete: "email", inputmode: "email", autocapitalize: "off" });
     const pw = h("input", { id: "cv-pw", type: "password", autocomplete: mode === "in" ? "current-password" : "new-password" });
+    let keepPref = true; try { keepPref = localStorage.getItem("cvfd.keep") !== "0"; } catch (e) {}
+    const keep = h("input", { id: "cv-keep", type: "checkbox", checked: keepPref, style: "width:auto;margin:0 8px 0 0;transform:scale(1.25)" });
     const busy = (b, on) => { b.disabled = on; };
     const go = async ev => {
       ev.preventDefault(); err.textContent = ""; const b = ev.submitter || form.querySelector("button[type=submit]"); busy(b, true);
       try {
+        // Keep me signed in: stay signed in on this device until Sign out. Unchecked: sign out when the browser closes.
+        try { localStorage.setItem("cvfd.keep", keep.checked ? "1" : "0"); } catch (e) {}
+        await auth.setPersistence(keep.checked ? firebase.auth.Auth.Persistence.LOCAL : firebase.auth.Auth.Persistence.SESSION);
         if (mode === "in") await auth.signInWithEmailAndPassword(email.value.trim(), pw.value);
         else {
           if (!name.value.trim()) throw { message: "Enter your name so the Training Division knows who you are." };
@@ -79,6 +84,7 @@
       mode === "up" ? [h("label", { for: "cv-name", text: "Name" }), name] : null,
       h("label", { for: "cv-email", text: "Email" }), email,
       h("label", { for: "cv-pw", text: mode === "up" ? "Password (8+ characters)" : "Password" }), pw,
+      h("label", { for: "cv-keep", style: "display:flex;align-items:center;font-weight:500;margin-top:14px" }, keep, "Keep me signed in on this device"),
       err,
       h("button", { class: "cv-btn", type: "submit", text: mode === "in" ? "Sign in" : "Create account" }));
     const card = h("div", { class: "cv-card" },
