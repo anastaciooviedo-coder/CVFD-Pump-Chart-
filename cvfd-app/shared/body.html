@@ -558,7 +558,7 @@ function vMember(uid){
     </div></div>
     ${APP?(()=>{ startTb(); const L = (tbm&&tbm.list||[]).filter(t=>t.uid===m.id); return `<div class="card"><div class="card-h"><h3>Task books</h3></div><div class="card-b">${L.length?L.map(t=>`<div class="rowx"><div><b>${esc(t.book&&t.book.title||"Task book")}</b><small>${tbStatus(t)} · ${tbPct(t)}%${t.archived?" · archived":""}</small></div><a class="btn sm" href="tb/?code=${esc(t.code)}&from=hub" target="_blank" rel="noopener">Open</a></div>`).join(""):`<p class="sub">No task book assigned. Assign one in the Task Book Hub using the email they signed up with.</p>`}</div></div>`; })():""}
     ${APP?`<div class="card"><div class="card-h"><h3>Access to restricted content</h3></div><div class="card-b">
-      <div class="rowx"><div><b>Officer ${m.officer&&m.officer.link?`<span class="pill ok">On</span>`:""}</b><small>Officer Review tile on the Field Guide home</small></div><button class="btn sm" type="button" data-officer="${esc(m.id)}" data-on="${m.officer&&m.officer.link?0:1}">${m.officer&&m.officer.link?"Turn off":"Turn on"}</button></div>
+      <div class="rowx"><div><b>Officer ${m.officer&&m.officer.link?`<span class="pill ok">On</span>`:""}</b><small>Officer Review on the Playbook home</small></div><button class="btn sm" type="button" data-officer="${esc(m.id)}" data-on="${m.officer&&m.officer.link?0:1}">${m.officer&&m.officer.link?"Turn off":"Turn on"}</button></div>
       <div class="rowx"><div><b>Training Division cadre ${memberRole[m.id]==="cadre"||memberRole[m.id]==="admin"?`<span class="pill ok">On</span>`:""}</b><small>${memberRole[m.id]==="admin"?"Admin: full access":"Cadre tab, TD dashboard, Cadre Material, member roster, edit content"}</small></div>${isAdmin&&memberRole[m.id]!=="admin"?`<button class="btn sm" type="button" data-cadre="${esc(m.id)}" data-on="${memberRole[m.id]==="cadre"?0:1}">${memberRole[m.id]==="cadre"?"Turn off":"Turn on"}</button>`:`<small>${isAdmin?"":"Admin only"}</small>`}</div>
     </div></div>`:""}
     <div class="card"><div class="card-h"><h3>ISO hours ${y}</h3></div><div class="card-b">
@@ -769,11 +769,117 @@ function vHomeTdGroups(){
       ${storeNotice() || vClassTiles()}
     </div>`;
 }
+// ---------- CVFD Playbook: home, search, training hub ----------
+const PBI = {
+  gauge:'<path d="M4 18a8 8 0 1 1 16 0"/><path d="m12 14 4-5"/>',
+  eye:'<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  book:'<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5"/>',
+  check:'<path d="M9 11l3 3 8-8"/><path d="M20 12v7H4V5h11"/>',
+  star:'<path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/>',
+  users:'<circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-6 7-6s7 2 7 6M16 4a4 4 0 0 1 0 8M22 21c0-3-2-5-4-6"/>',
+  cal:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  grad:'<path d="m2 9 10-5 10 5-10 5z"/><path d="M6 11v5c3 2 9 2 12 0v-5"/>',
+  chart:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  link:'<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',
+  doc:'<path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4M9 13h6M9 17h6"/>',
+  search:'<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>'
+};
+const pbIcon = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${PBI[n]||""}</svg>`;
+function pbRow(href, icon, title, sub, badge){
+  const ext = /^https?:/.test(href);
+  return `<a class="row-btn pb-row" href="${esc(href)}"${ext?` target="_blank" rel="noopener"`:""}><span class="pb-ic">${pbIcon(icon)}</span><span class="m"><b>${title}</b><small>${sub}</small></span>${badge?`<span class="pb-badge">${badge}</span>`:`<span class="chev">${ext?"↗":"›"}</span>`}</a>`;
+}
+function pbGreet(){ const h = new Date().getHours(); return h<12 ? "Good morning" : h<17 ? "Good afternoon" : "Good evening"; }
+function pbFirst(){ const n = String((me.doc&&me.doc.name)||me.acct||"").trim(); if (!n) return ""; const f = n.includes(",") ? n.split(",")[1] : n.split(/\s+/)[0]; return (f||"").trim().split(/\s+/)[0]; }
+function pbIsOfficer(){ return !!(canEdit || (me.doc&&me.doc.officer&&me.doc.officer.link)); }
+function vHomeApp(){
+  const n = SOGS ? SOGS.length : "";
+  const nm = pbFirst();
+  const newM = canEdit ? (startRoster(), roster&&roster.ready ? roster.list.filter(needsReview).length : 0) : 0;
+  const supp = store.sections.filter(s=>s.area==="suppression");
+  return `<section class="view pb-home">
+    <div class="pb-hero"><h1>${pbGreet()}${nm?", "+esc(nm):""}</h1><p>Everything for the fireground and the training ground, one tap away.</p></div>
+    <div class="pb-go">
+      <a class="pb-big" href="${PUMP_CHART}">${pbIcon("gauge")}<b>Pump chart</b></a>
+      <a class="pb-big" href="#sizeup">${pbIcon("eye")}<b>First-in size-up</b></a>
+      <a class="pb-big" href="#sogs">${pbIcon("book")}<b>SOGs</b><small>${n}</small></a>
+    </div>
+    <a class="pb-search" href="#find">${pbIcon("search")}<span>Search SOGs, drills, tools, everything</span></a>
+    <div class="group"><h2>For you</h2><div class="list">
+      ${pbRow("tb/","check","My task books","Fill in, sign and submit your phase books")}
+      ${pbIsOfficer()?pbRow("tb/officers.html","star","Officer Review","Sign off and approve member task books"):""}
+      ${canEdit?pbRow("#roster","users","Member roster",newM?`${newM} profile${newM>1?"s":""} to verify`:"Profiles, certs, hours, books",newM||""):""}
+      ${canEdit?pbRow("#cadre","cal","Cadre Weekly Check-In","This week's events, testing, tasks"):""}
+      ${pbRow("#me","grad","My training record","Certifications, CE and ISO hours")}
+    </div></div>
+    <div class="group"><h2>On scene</h2>
+      <div class="tiles">
+        <a class="tile" href="#practice" style="--c:var(--s5)"><b>Scenario practice</b><span>Houses, apartments, commercial, vehicle fires and extrication</span></a>
+        <a class="tile" href="#calls" style="--c:var(--s1)"><b>Call types</b><span>Gas, CO, EV, hazmat and more from the 300 series</span></a>
+        <a class="tile" href="#tactics" style="--c:var(--s3)"><b>First due engine tactics</b><span>Offensive to defensive, leader lines, water</span></a>
+        <a class="tile" href="#apparatus" style="--c:var(--s3)"><b>Apparatus</b><span>Engines, ladders, boosters, pump, foam, aerial</span></a>
+        <a class="tile" href="#grips" style="--c:var(--s2)"><b>Hoseline grips</b><span>Hip, clamp, crooked lean, Comella lock, backup</span></a>
+        <a class="tile" href="#drills" style="--c:var(--s4)"><b>5-minute drills</b><span>100 quick station-level drills</span></a>
+        ${supp.map(c=>`<a class="tile" href="#cat-${esc(c.id)}" style="--c:var(--s1)"><b>${esc(c.title)}</b><span>${esc(c.blurb||"")}</span></a>`).join("")}
+      </div>
+    </div>
+    <div class="group"><div class="gh"><h2>Department tools</h2><a class="sub" href="#tools">All</a></div>
+      ${storeNotice() || (store.tools.length ? `<div class="list">${store.tools.map(x=>pbRow(x.url,"link",esc(x.name),esc(x.note||"Opens with your own login"))).join("")}</div>` : vToolTiles())}
+    </div>
+  </section>`;
+}
+let findQ = "";
+function pbPages(){
+  const P = [["#sogs","book","SOGs","All "+(SOGS?SOGS.length:"")+" policies and guidelines"],[PUMP_CHART,"gauge","Pump chart","Crosslays, PDP builder, friction loss, hydrants"],["#sizeup","eye","First-in size-up","Radio report, 360, strategy"],["#practice","eye","Scenario practice","Houses, apartments, commercial, vehicles"],["#extrication","eye","Vehicle extrication","6 crash scenes in Scenario practice"],["#calls","doc","Call types","300-series modules"],["#tactics","doc","First due engine tactics","Offensive, transitional, defensive"],["#apparatus","doc","Apparatus","Unit roster and systems"],["#grips","doc","Hoseline grips","Grips and backup"],["#drills","cal","5-minute drills","100 station drills"],["#training","grad","Training","Training Division categories"],["#academy","grad","Fire academy","Classes, syllabus, schedule"],["#me","grad","My training record","Certs, CE and ISO hours"],["tb/","check","My task books","Phase books"],["#tools","link","Department tools","Vector, PSTrax, Aladtec and more"]];
+  if (pbIsOfficer()) P.push(["tb/officers.html","star","Officer Review","Sign-offs"]);
+  if (canEdit) P.push(["#td","chart","TD Master Dashboard","Staff only"],["#cadre","cal","Cadre Weekly Check-In","Staff only"],["#roster","users","Member roster","Staff only"],["tb/hub.html","check","Task Book Hub","Assign and approve books"],["#td-docs","doc","Cadre material","Staff only"]);
+  for (const s of store.sections) P.push([(s.area==="academy"?"#class-":"#cat-")+s.id, s.area==="academy"?"grad":"doc", s.title, s.blurb||""]);
+  for (const x of store.tools) P.push([x.url,"link",x.name,x.note||"Department tool"]);
+  return P;
+}
+function vFind(){
+  const q = findQ.trim().toLowerCase();
+  const pages = pbPages().filter(p=>!q || (p[2]+" "+p[3]).toLowerCase().includes(q));
+  const keepQ = sogQuery; sogQuery = findQ;
+  const sogs = q && SOGS ? sogMatches().slice(0,25) : [];
+  const out = `<section class="view">
+    <div class="gh"><h2>Search</h2></div>
+    <div class="search"><input type="search" id="find-q" placeholder="Try mayday, 303.04, CO, ladder drill…" aria-label="Search everything" value="${esc(findQ)}" autocomplete="off"></div>
+    ${pages.length?`<div class="group"><h2>${q?"Pages":"Jump to"}</h2><div class="list">${pages.slice(0,q?12:40).map(p=>pbRow(p[0],p[1],esc(p[2]),esc(p[3]))).join("")}</div></div>`:""}
+    ${q?`<div class="group"><h2>SOGs${sogs.length?` <span class="sub">${sogs.length}${sogs.length===25?"+":""}</span>`:""}</h2>${sogs.length?`<div class="list">${sogs.map(({s,snip})=>`<a class="row-btn" href="#sog-${s.s}" style="--c:var(--s3)"><span class="n">${s.s}</span><span class="m"><b>${hl(s.t)}</b>${snip?`<small>${hl(snip)}</small>`:""}</span><span class="chev">›</span></a>`).join("")}</div>`:`<div class="empty">No SOG matches “${esc(findQ)}”.</div>`}</div>`:""}
+  </section>`;
+  sogQuery = keepQ; return out;
+}
+function vTrainingApp(){
+  const cats = store.sections.filter(s=>s.area==="training");
+  return `<section class="view">
+    <div class="pb-title"><h1>Training</h1>${canEdit?`<span class="pill">Staff</span>`:""}</div>
+    <div class="group"><h2>My training</h2><div class="list">
+      ${pbRow("#me","grad","My training record","Certifications, CE and ISO hours, profile")}
+      ${pbRow("tb/","check","My task books","Phase books assigned to you: fill in, sign, submit")}
+      ${pbIsOfficer()?pbRow("tb/officers.html","star","Officer Review","Sign off and approve member task books"):""}
+    </div></div>
+    ${canEdit?`<div class="group"><h2>Training Division staff</h2><div class="list">
+      ${pbRow("#td","chart","TD Master Dashboard","Courses, actions, probation, task books")}
+      ${pbRow("#cadre","cal","Weekly Check-In","This week's events, testing, tasks")}
+      ${pbRow("tb/hub.html","check","Task Book Hub","Assign books, review and approve phases")}
+      ${(()=>{ startRoster(); const k = roster&&roster.ready ? roster.list.filter(needsReview).length : 0; return pbRow("#roster","users","Member roster",k?`${k} new or changed profile${k>1?"s":""}`:"Profiles, certs, hours, books",k||""); })()}
+      ${pbRow("#td-docs","doc","Cadre material","Staff-only documents")}
+    </div></div>`:""}
+    <div class="group"><div class="gh"><h2>Fire Training Division</h2></div>
+      ${storeNotice() || (cats.length?`<div class="list">${cats.map(c=>`<a class="row-btn" href="#cat-${esc(c.id)}" style="--c:var(--s4)"><span class="n">${itemsOf(c.id).length}</span><span class="m"><b>${esc(c.title)}</b><small>${esc(c.blurb||"")}</small></span><span class="chev">›</span></a>`).join("")}</div>`:`<div class="empty">No categories yet.${canEdit?" Turn on Edit to add the first one.":""}</div>`)}
+    </div>
+    <div class="group"><div class="gh"><h2>CVFD Fire Academy</h2><a class="sub" href="#academy">All classes</a></div>
+      ${storeNotice() || vClassTiles()}
+    </div>
+  </section>`;
+}
 function vMoved(){
   return `<section class="view"><div class="empty">That page isn't part of the Field Guide.<br><br><a class="btn primary" href="#home">Back to Home</a></div></section>`;
 }
 function vHome(){
   if (MODE==="td") return vHomeTd();
+  if (APP && !editing) return vHomeApp();
   const cats = store.sections.filter(s=>s.area==="training");
   const n = SOGS ? SOGS.length : "";
   return `<section class="view">
@@ -895,15 +1001,20 @@ function vDrills(){
 let pracKind = "all"; const pracShown = new Set(); const pracSide = {};
 
 function pracFig(p){ return p.img ? `<img src="${esc(p.img)}" alt="${esc(p.title)}" loading="lazy">` : p.svg; }
-const PRAC_KINDS = [["all","All"],["house","Houses"],["apt","Apartments"],["commercial","Commercial"],["vehicle","Vehicles"]];
+const PRAC_KINDS = [["all","All"],["house","Houses"],["apt","Apartments"],["commercial","Commercial"],["vehicle","Vehicle fires"]].concat(APP ? [["xtr","Extrication"]] : []);
 function vPractice(){
-  const list = PRACTICE.filter(p=>pracKind==="all"||p.kind===pracKind);
+  const list = pracKind==="xtr" ? [] : PRACTICE.filter(p=>pracKind==="all"||p.kind===pracKind);
+  const xl = APP && (pracKind==="all"||pracKind==="xtr") ? XTR : [];
+  const total = PRACTICE.length + (APP ? XTR.length : 0);
   return `<section class="view" style="--c:var(--s5)">
     <a class="sub" href="#sizeup">‹ First-In Size-Up</a>
-    <div class="gh"><h2>Size-Up Practice</h2><span class="sub">${PRACTICE.length} scenes</span></div>
-    <p class="sub">Look at the scene, give your initial radio report out loud, then check it against the sample. Scenes marked 4 sides let you walk the 360: Alpha, Bravo, Charlie and Delta. Vehicle scenes go front, driver side, rear and passenger side.</p>
+    <div class="gh"><h2>${APP?"Scenario practice":"Size-Up Practice"}</h2><span class="sub">${total} scenes</span></div>
+    <p class="sub">Look at the scene, give your initial radio report out loud, then check it against the sample. Scenes marked 4 sides let you walk the 360: Alpha, Bravo, Charlie and Delta. Vehicle scenes go front, driver side, rear and passenger side.${APP?" Extrication scenes add instructor prompts and decision cards for a crew tabletop.":""}</p>
     <div class="chips" role="group" aria-label="Scene type">${PRAC_KINDS.map(([k,l])=>`<button class="chip" type="button" data-pkind="${k}" aria-pressed="${pracKind===k}">${l}</button>`).join("")}</div>
-    <div class="prac-grid">${list.map(p=>`<a class="prac-tile" href="#practice-${p.id}"><span class="prac-fig">${pracFig(p)}${p.sides?`<span class="prac-360">4 sides</span>`:""}</span><b>${esc(p.title)}</b><small>${esc(p.info)}</small></a>`).join("")}</div>
+    <div class="prac-grid">${list.map(p=>`<a class="prac-tile" href="#practice-${p.id}"><span class="prac-fig">${pracFig(p)}${p.sides?`<span class="prac-360">4 sides</span>`:""}</span><b>${esc(p.title)}</b><small>${esc(p.info)}</small></a>`).join("")}${xl.map(x=>`<a class="prac-tile" href="#xtr-${x.n}"><span class="prac-fig"><img src="${xImg(x.n,"A")}" alt="${esc(x.t)}" loading="lazy"><span class="prac-360">Extrication${x.card?" · card":""}</span></span><b>${esc(x.t)}</b><small>${esc(x.s)}</small></a>`).join("")}</div>
+    ${pracKind==="xtr"?`<div class="card prac-card" style="margin-top:14px"><div class="card-h"><h3>Pass 1 | Describe the hazards</h3></div><div class="card-b body"><p>For each view, have the crew answer out loud:</p>${xPass1()}<p class="sub">Instructor prompts are on each scene, to use after the crew answers.</p></div></div>
+    <div class="card prac-card"><div class="card-h"><h3>Pass 2 | Extrication decision cards</h3></div><div class="card-b body"><p>Read these only after the crew has completed its hazard size-up. For each card, require:</p><ul>${XREQ.map(r=>`<li>${esc(r)}</li>`).join("")}</ul><p class="sub">Cards for scenes 01, 02, 03 and 06.</p></div></div>
+    <div class="card prac-card"><div class="card-h"><h3>Finish on the radio</h3></div><div class="card-b body">${xRadio()}</div></div>`:""}
   </section>`;
 }
 function vPracticeScene(id){
@@ -977,7 +1088,7 @@ function vXtrScene(n){
   const v = xtrView[n] || "A"; const vl = XV.find(a=>a[0]===v)[1];
   const c = x.card, shown = xtrCard.has(n), asked = xtrAsk.has(n);
   return `<section class="view" style="--c:var(--s2)">
-    <a class="sub" href="#extrication">‹ All crash scenes</a>
+    <a class="sub" href="#extrication">‹ ${APP?"Extrication scenes":"All crash scenes"}</a>
     <div class="gh"><h2>${x.n} · ${esc(x.t)}</h2><span class="sub">${i+1} of ${XTR.length}</span></div>
     <div class="prac-sides" role="tablist" aria-label="View">${XV.map(([k,l])=>`<button type="button" role="tab" class="prac-side" data-xview="${n}:${k}" aria-selected="${k===v}">${l}</button>`).join("")}</div>
     <div class="prac-big"><img src="${xImg(n,v)}" alt="${esc(x.t)}, ${esc(vl)} view"></div>
@@ -1142,7 +1253,7 @@ function vSizeup(){
   if (!store.ready) return `<section class="view">${head}${storeNotice()}</section>`;
   return `<section class="view" style="--c:var(--s5)">${head}
     ${sec&&sec.blurb?`<p class="sub">${inline(sec.blurb)}</p>`:""}
-    <a class="prac-banner" href="#practice"><span class="prac-fig">${pracFig(PRACTICE[0])}</span><span><b>Size-Up Practice</b><small>${PRACTICE.length} scenes, most with all four sides: houses, apartments, commercial and vehicles. Give your report, then check it.</small></span><span class="chev">›</span></a>
+    <a class="prac-banner" href="#practice"><span class="prac-fig">${pracFig(PRACTICE[0])}</span><span><b>${APP?"Scenario practice":"Size-Up Practice"}</b><small>${APP?PRACTICE.length+XTR.length:PRACTICE.length} scenes: houses, apartments, commercial, vehicle fires${APP?" and extrication":""}. Give your report, then check it.</small></span><span class="chev">›</span></a>
     <p class="sub">Work top to bottom. Tap a line when you've covered it on the radio. <span class="fillin">Highlighted</span> words are what you fill in.</p>
     ${tags.length>1?`<div class="chips" role="group" aria-label="Method">${tags.map(t=>`<button class="chip" type="button" data-tag="${esc(t)}" aria-pressed="${t===sizeTag}">${esc(t)}</button>`).join("")}</div>`:""}
     ${(()=>{ let step = 0; return items.map(it=>{ const isEx = /example/i.test(it.title), isTip = /tip/i.test(it.title); const nb = (it.body.match(/^- /gm)||[]).length; const done = [...Array(nb).keys()].filter(i=>checked.has(it.id+":"+i)).length; const badge = isEx ? "EX" : isTip ? "TIP" : String(++step);
@@ -1152,6 +1263,7 @@ function vSizeup(){
   </section>`;
 }
 function vTraining(){
+  if (APP && !editing) return vTrainingApp();
   const cats = store.sections.filter(s=>s.area==="training");
   return `<section class="view">
     <div class="gh"><h2>Fire Training Division</h2></div>
@@ -1302,7 +1414,8 @@ function route(){
   const h = (location.hash||"#home").slice(1);
   let html, tab = "home";
   let m;
-  if (h==="sogs") { html = vSogList(); tab="sogs"; }
+  if (h==="find") { html = vFind(); tab="home"; }
+  else if (h==="sogs") { html = vSogList(); tab="sogs"; }
   else if ((m = h.match(/^sog-(\d{3})(?:-(\d{2}))?$/))) { html = vSog(m[1], m[2]); tab="sogs"; }
   else if (MODE==="guide" && (/^(training|academy|me|roster|cadre|td)$/.test(h) || /^(class|member|td|tddoc)-/.test(h) || ((m = h.match(/^cat-(.+)$/)) && store.sections.find(s=>s.id===m[1]&&s.area!=="suppression")) || ((m = h.match(/^item-(.+)$/)) && (it => it && store.sections.find(s=>s.id===it.section&&(s.area==="training"||s.area==="academy")))(store.items.find(i=>i.id===m[1]))))) { html = vMoved(); tab="home"; }
   else if (MODE==="td" && (h==="sizeup" || h==="tools")) { html = `<section class="view"><div class="empty">That lives in the CVFD Field Guide.<br><br><a class="btn primary" href="${GUIDE_APP}" target="_blank" rel="noopener">Open CVFD Field Guide ↗</a></div></section>`; }
@@ -1314,8 +1427,8 @@ function route(){
   else if (h==="calls" && MODE!=="td") { html = vCalls(); tab="home"; }
   else if ((m = h.match(/^call-([a-z]+)$/)) && MODE!=="td") { html = vCall(m[1]); tab="home"; }
   else if ((m = h.match(/^tactics(?:-([a-z]+))?$/)) && MODE!=="td") { html = vTactics(m[1]); tab="home"; }
-  else if (h==="extrication" && MODE!=="td") { html = vXtr(); tab="home"; }
-  else if ((m = h.match(/^xtr-(\d{2})$/)) && MODE!=="td") { html = vXtrScene(m[1]); tab="home"; }
+  else if (h==="extrication" && MODE!=="td") { if (APP) { pracKind = "xtr"; html = vPractice(); tab="sizeup"; } else { html = vXtr(); tab="home"; } }
+  else if ((m = h.match(/^xtr-(\d{2})$/)) && MODE!=="td") { html = vXtrScene(m[1]); tab = APP ? "sizeup" : "home"; }
   else if (h==="practice") { html = vPractice(); tab="sizeup"; }
   else if ((m = h.match(/^practice-(.+)$/))) { html = vPracticeScene(m[1]); tab="sizeup"; }
   else if (h==="training") { html = vTraining(); tab="training"; }
@@ -1334,6 +1447,8 @@ function route(){
   else if ((m = h.match(/^member-(.+)$/))) { html = vMember(m[1]); tab="cadre"; }
   else if (h==="cadre") { html = canEdit ? (APP ? "" : vCkMoved()) : vCadreGate(); tab="cadre"; }
   else html = vHome();
+  if (APP && tab==="academy") tab = "training";
+  if (APP && tab==="tools") tab = "home";
   document.querySelectorAll("nav.tabs a").forEach(a=>a.toggleAttribute("aria-current", a.dataset.tab===tab) || a.removeAttribute("aria-current"));
   document.querySelectorAll("nav.tabs a").forEach(a=>{ if(a.dataset.tab===tab) a.setAttribute("aria-current","page"); });
   return {html, h, m};
@@ -1347,7 +1462,7 @@ function render(){
   if (showCadre && !cadreStarted && cadreCtx) { cadreStarted = true; try { initCadre(cadreCtx); } catch(err) { console.error(err); } }
   view.innerHTML = html;
   applyCollapsed();
-  if (active && (active==="sog-q"||active==="home-q"||active==="td-q"||active==="dept-q")) { const el = $("#"+active); if (el) { el.focus(); try{ el.setSelectionRange(caret,caret); }catch(e){} } }
+  if (active && (active==="sog-q"||active==="find-q"||active==="home-q"||active==="td-q"||active==="dept-q")) { const el = $("#"+active); if (el) { el.focus(); try{ el.setSelectionRange(caret,caret); }catch(e){} } }
   if (h !== lastHash) {
     lastHash = h;
     const mm = h.match(/^sog-(\d{3})-(\d{2})$/);
@@ -1378,6 +1493,7 @@ takeTagFromHash();
 view.addEventListener("input", e => {
   if (e.target.id==="sog-q") { sogQuery = e.target.value; const rows = $("#sog-rows"); render(); }
   if (e.target.id==="home-q") { sogQuery = e.target.value; }
+  if (e.target.id==="find-q") { findQ = e.target.value; render(); }
   if (e.target.id==="td-q") { td.q = e.target.value; render(); }
   if (e.target.id==="dept-q") { deptQ = e.target.value; render(); }
 });

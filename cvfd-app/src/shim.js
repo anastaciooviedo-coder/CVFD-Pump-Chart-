@@ -10,6 +10,9 @@
   const STAFF = ["cadre", "admin"];
   let resolveCtx; const ctxReady = new Promise(r => (resolveCtx = r));
   let auth = null, fs = null, profile = null, fbUser = null;
+  /* Appearance: Auto follows the phone; Dark or Light is remembered on this device. */
+  const setTheme = v => { try { v ? localStorage.setItem("cvfd.theme", v) : localStorage.removeItem("cvfd.theme"); } catch (e) {} if (v) document.documentElement.setAttribute("data-theme", v); else document.documentElement.removeAttribute("data-theme"); };
+  try { const th = localStorage.getItem("cvfd.theme"); if (th === "dark" || th === "light") document.documentElement.setAttribute("data-theme", th); } catch (e) {}
 
   /* ---------- tiny DOM helpers ---------- */
   const h = (tag, attrs = {}, ...kids) => {
@@ -36,6 +39,11 @@
   .cv-row{display:flex;gap:8px;align-items:center;padding:8px 0;border-top:1px solid var(--line,#d3d8dc)}
   .cv-row span{flex:1;font-size:14px;overflow:hidden;text-overflow:ellipsis}
   .cv-row select{width:auto;padding:6px 8px;font-size:14px}
+  .cv-card{border-radius:20px}
+  .cv-btn{border-radius:14px}
+  .cv-seg{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:6px 0 4px}
+  .cv-seg button{min-height:46px;border-radius:12px;border:1px solid var(--line,#d3d8dc);background:transparent;color:var(--ink,#15191c);font:inherit;font-weight:600}
+  .cv-seg button[aria-pressed="true"]{background:var(--ink,#15191c);color:var(--bg,#fff);border-color:var(--ink,#15191c)}
   .cv-gear{margin-left:6px;padding-left:8px!important;padding-right:8px!important;display:inline-flex;align-items:center}`;
   document.head.append(h("style", { text: css }));
   const badgeSrc = () => { const b = document.querySelector("img.badge, header img"); return b ? b.src : ""; };
@@ -89,7 +97,7 @@
       h("button", { class: "cv-btn", type: "submit", text: mode === "in" ? "Sign in" : "Create account" }));
     const card = h("div", { class: "cv-card" },
       badgeSrc() ? h("img", { class: "cv-badge", src: badgeSrc(), alt: "" }) : null,
-      h("h1", { text: mode === "in" ? "CVFD sign in" : "Create your account" }),
+      h("h1", { text: mode === "in" ? "CVFD Playbook sign in" : "Create your account" }),
       h("p", { text: mode === "in" ? "SOGs, size-up, training and your training record." : "Use the email you want the Training Division to reach you at." }),
       form,
       mode === "in"
@@ -110,6 +118,11 @@
     const card = h("div", { class: "cv-card" },
       h("h1", { text: "Account" }),
       h("p", {}, (profile && profile.name) || fbUser.displayName || "", h("br"), fbUser.email || "", h("br"), "Role: " + role),
+      h("label", { text: "Appearance" }),
+      (() => { const cur = document.documentElement.getAttribute("data-theme") || ""; const seg = h("div", { class: "cv-seg", role: "group", "aria-label": "Appearance" });
+        [["", "Auto"], ["dark", "Dark"], ["light", "Light"]].forEach(([v, l]) => seg.append(h("button", { type: "button", "aria-pressed": String(v === cur), text: l, onclick: () => { setTheme(v); accountSheet(); } })));
+        return seg; })(),
+      h("a", { class: "cv-btn alt", href: "#me", style: "text-align:center;text-decoration:none;box-sizing:border-box", text: "My training record", onclick: closeOverlay }),
       h("button", { class: "cv-btn alt", type: "button", text: "Close", onclick: closeOverlay }),
       h("button", { class: "cv-btn", type: "button", text: "Sign out", onclick: async () => { await auth.signOut(); location.hash = ""; location.reload(); } }),
       role === "admin" ? h("button", { class: "cv-btn alt", type: "button", text: "Manage member roles", onclick: rolesSheet }) : null,
