@@ -1,0 +1,100 @@
+rules_version = '2';
+// Mirrors the claude.ai apps: everyone signed in reads content; Training Division staff
+// (role cadre or admin) edit it; members read and write only their own record.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function role() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role : 'none';
+    }
+    function staff() { return role() in ['cadre', 'admin']; }
+    function admin() { return role() == 'admin'; }
+    // A station officer verified by the Training Division (members/{uid}.officer.link is set by staff only).
+    function officer() {
+      return signedIn() && exists(/databases/$(database)/documents/members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/members/$(request.auth.uid)).data.get('officer', null) != null
+        && get(/databases/$(database)/documents/members/$(request.auth.uid)).data.officer.get('link', '') != '';
+    }
+    function myEmail() { return signedIn() && request.auth.token.email != null ? request.auth.token.email.lower() : ''; }
+
+    // Accounts. A new account can only make itself a member; only an admin changes roles.
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || staff());
+      allow create: if signedIn() && request.auth.uid == uid && request.resource.data.role == 'member';
+      allow update: if admin()
+        || (signedIn() && request.auth.uid == uid && request.resource.data.role == resource.data.role);
+      allow delete: if signedIn() && (request.auth.uid == uid || admin());
+    }
+
+    // Field Guide and Training content.
+    match /sections/{id} { allow read: if signedIn(); allow write: if staff(); }
+    match /items/{id}    { allow read: if signedIn(); allow write: if staff(); }
+    match /tools/{id}    { allow read: if signedIn(); allow write: if staff(); }
+
+    // Cadre only: weekly check-in and TD master dashboard.
+    match /weeks/{rest=**} { allow read, write: if staff(); }
+    match /td/{rest=**}    { allow read, write: if staff(); }
+
+    // Department list imported from Aladtec (id = lowercase email). Staff manage it; a member can read
+    // only the entry with their own sign-in email, which prefills their profile.
+    match /roster/{id} {
+      allow read: if staff() || (signedIn() && request.auth.token.email != null && request.auth.token.email.lower() == id);
+      allow write: if staff();
+    }
+
+    // Site settings (CE hours target): everyone signed in reads, staff set.
+    match /config/{id} { allow read: if signedIn(); allow write: if staff(); }
+
+    // ---------- Task books ----------
+    // Book content: anyone signed in can open a book by id (the book page needs it); only staff and officers list them.
+    match /tbLibrary/{id} { allow get: if signedIn(); allow list: if staff() || officer(); allow write: if staff(); }
+    match /tbCustom/{id}  { allow get: if signedIn(); allow list: if staff() || officer(); allow write: if staff(); }
+
+    // One assignment per code. Staff manage them; officers approve or return phases; the member who owns it
+    // (uid, or their sign-in email until they first open it) saves progress and submits one phase at a time.
+    match /tbMembers/{code} {
+      function keep(keys) { return !request.resource.data.diff(resource.data).affectedKeys().hasAny(keys); }
+      function ownsIt() { return signedIn() && resource.data.get('uid', null) == request.auth.uid; }
+      function claimsIt() {
+        return signedIn() && resource.data.get('uid', null) == null && myEmail() != '' && resource.data.get('email', '') == myEmail()
+          && request.resource.data.uid == request.auth.uid;
+      }
+      function phaseOk() {
+        let ch = request.resource.data.phases.diff(resource.data.phases).affectedKeys();
+        let p = request.resource.data.get('submitting', '');
+        return ch.size() == 0 || (ch.size() == 1 && ch.hasOnly([p])
+          && request.resource.data.phases[p].status == 'submitted'
+          && resource.data.phases[p].status in ['open', 'returned']);
+      }
+      allow get: if signedIn();
+      allow list: if staff() || officer() || (signedIn() && (resource.data.get('uid', null) == request.auth.uid || resource.data.get('email', '') == myEmail()));
+      allow create, delete: if staff();
+      allow update: if staff()
+        || (officer() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['phases', 'summary', 'lastActivity', 'displayName']))
+        || ((ownsIt() || claimsIt()) && keep(['code', 'book', 'email', 'archived', 'name', 'assignedAt', 'notes', 'deleted']) && phaseOk());
+    }
+    // Entries and signatures for one assignment: its owner, officers (they sign on the member's book) and staff.
+    match /tbBooks/{code} {
+      function writer() {
+        return staff() || officer()
+          || (signedIn() && get(/databases/$(database)/documents/tbMembers/$(code)).data.get('uid', null) == request.auth.uid);
+      }
+      allow get: if signedIn();
+      allow list: if staff();
+      allow write: if writer();
+      match /sigs/{k} { allow read: if signedIn(); allow write: if writer(); }
+    }
+
+    // Member training records: the member and staff.
+    // Members cannot mark themselves as a verified officer or as reviewed: only staff set those.
+    match /members/{uid} {
+      function self() { return signedIn() && request.auth.uid == uid; }
+      function staffOnly() { return ['officer', 'reviewedAt', 'certCheck']; }
+      allow read, delete: if self() || staff();
+      allow create: if staff() || (self() && !request.resource.data.keys().hasAny(staffOnly()));
+      allow update: if staff() || (self() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(staffOnly()));
+      match /{sub}/{doc} { allow read, write: if signedIn() && (request.auth.uid == uid || staff()); }
+    }
+  }
+}

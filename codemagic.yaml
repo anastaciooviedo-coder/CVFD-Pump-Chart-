@@ -1,0 +1,47 @@
+# Cloud iPhone build for the combined CVFD app (cvfd-app/). Codemagic builds on its own Macs,
+# signs with your Apple account and uploads to TestFlight. Setup steps: cvfd-app/README.md.
+workflows:
+  cvfd-ios:
+    name: CVFD app - iOS (TestFlight)
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    working_directory: cvfd-app
+    integrations:
+      app_store_connect: CVFD App Store Connect
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: org.communityvfd.cvfd
+      groups:
+        - firebase
+      node: 22
+      xcode: latest
+    triggering:
+      events:
+        - tag
+      tag_patterns:
+        - pattern: 'ios-*'
+    scripts:
+      - name: Install packages
+        script: npm ci
+      - name: Firebase settings
+        script: |
+          mkdir -p www
+          printf '%s\n' "$FIREBASE_CONFIG_JS" > www/firebase-config.js
+      - name: Build web app and copy into iOS project
+        script: |
+          python3 tools/build.py
+          npx cap sync ios
+      - name: Signing profiles
+        script: xcode-project use-profiles
+      - name: Build number
+        script: cd ios/App && agvtool new-version -all $((BUILD_NUMBER + 1))
+      - name: Build .ipa
+        script: xcode-project build-ipa --project "ios/App/App.xcodeproj" --scheme "App"
+    artifacts:
+      - cvfd-app/build/ios/ipa/*.ipa
+      - build/ios/ipa/*.ipa
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
